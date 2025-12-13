@@ -150,7 +150,6 @@ class Track1Env(BaseEnv):
         # Table surface with optional color randomization
         self._build_table()
         self._build_tape_lines()
-        self._build_robot_base_visuals()
         self._build_debug_markers()
         
         # Load task objects
@@ -428,24 +427,16 @@ class Track1Env(BaseEnv):
             builder.initial_pose = sapien.Pose(p=pos, q=rotation)
             builder.build_static(name=spec["name"])
 
-    def _build_robot_base_visuals(self):
-        """Build visual representations of robot bases."""
-        base_material = [0.2, 0.2, 0.2]
-        base_specs = [
-            {"pos": [0.119, 0.10, 0.005], "name": "left_base_visual"},
-            {"pos": [0.481, 0.10, 0.005], "name": "right_base_visual"},
-        ]
-        
-        for spec in base_specs:
-            builder = self.scene.create_actor_builder()
-            builder.add_box_visual(half_size=[0.055, 0.055, 0.005], material=base_material)
-            builder.initial_pose = sapien.Pose(p=spec["pos"])
-            builder.build_static(name=spec["name"])
+
 
     def _load_agent(self, options: dict):
+        # Rotate robots to face +Y (90 degrees around Z axis)
+        # q = [cos(pi/4), 0, 0, sin(pi/4)]
+        rotation = [0.7071068, 0, 0, 0.7071068]
+        
         agent_poses = [
-            sapien.Pose(p=[0.119, 0.10, 0]),  # Left Robot
-            sapien.Pose(p=[0.481, 0.10, 0])   # Right Robot
+            sapien.Pose(p=[0.119, 0.055, 0], q=rotation),  # Left Robot
+            sapien.Pose(p=[0.481, 0.055, 0], q=rotation)   # Right Robot
         ]
         
         # Enable per-env building for joint randomization
