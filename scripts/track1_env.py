@@ -42,13 +42,39 @@ class Track1Env(BaseEnv):
 
     @property
     def _default_sensor_configs(self):
-        # Front Camera with optional per-reconfigure pose randomization
+        """Front Camera with optional config file override for manual tuning."""
+        import os
+        import json
+        from scipy.spatial.transform import Rotation
+        
+        # Default parameters
         base_pos = [0.316, 0.260, 0.407]
+        pitch, yaw, roll = -90, 0, 0  # degrees
+        fov_deg = 73.63
+        
+        # Check for camera config file (for manual tuning)
+        config_path = os.environ.get('CAMERA_CONFIG_PATH', '')
+        if config_path and os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                base_pos = config.get('position', base_pos)
+                pitch = config.get('pitch', pitch)
+                yaw = config.get('yaw', yaw)
+                roll = config.get('roll', roll)
+                fov_deg = config.get('fov', fov_deg)
+                print(f"[Track1Env] Loaded camera config from {config_path}")
+            except Exception as e:
+                print(f"[Track1Env] Warning: Failed to load camera config: {e}")
+        
+        # Convert Euler angles to quaternion
+        rot = Rotation.from_euler('xyz', [pitch, yaw, roll], degrees=True)
+        q_scipy = rot.as_quat()  # [x, y, z, w]
+        q_sapien = [q_scipy[3], q_scipy[0], q_scipy[1], q_scipy[2]]  # [w, x, y, z]
         
         if self.domain_randomization and hasattr(self, 'num_envs') and self.num_envs > 1:
-            # Randomize camera pose: ±2.5cm position, ±7.5° rotation
-            pose = sapien_utils.look_at(eye=base_pos, target=[0.316, 0.260, 0.0])
-            pose = Pose.create(pose)
+            base_pose = sapien.Pose(p=base_pos, q=q_sapien)
+            pose = Pose.create(base_pose)
             pose = pose * Pose.create_from_pq(
                 p=torch.rand((self.num_envs, 3)) * 0.05 - 0.025,
                 q=randomization.random_quaternions(
@@ -56,7 +82,7 @@ class Track1Env(BaseEnv):
                 ),
             )
         else:
-            pose = sapien.Pose(p=base_pos, q=[1, 0, 0, 0])
+            pose = sapien.Pose(p=base_pos, q=q_sapien)
         
         return [
             CameraConfig(
@@ -64,7 +90,7 @@ class Track1Env(BaseEnv):
                 pose=pose,
                 width=640,
                 height=480,
-                fov=np.deg2rad(73.63),
+                fov=np.deg2rad(fov_deg),
                 near=0.01,
                 far=100,
             ),
@@ -115,9 +141,29 @@ class Track1Env(BaseEnv):
         self._build_table()
         self._build_tape_lines()
         self._build_robot_base_visuals()
+        self._build_debug_markers()
         
         # Load task objects
         self._load_objects(options)
+
+    def _build_debug_markers(self):
+        """Build debug markers for coordinate system visualization.
+        Red at (0,0), Green at (1,0), Blue at (0,1).
+        """
+        marker_height = 0.005 # Slightly above table/ground
+        radius = 0.02
+        
+        markers = [
+            {"pos": [0, 0, marker_height], "color": [1, 0, 0], "name": "debug_origin_red"},
+            {"pos": [1, 0, marker_height], "color": [0, 1, 0], "name": "debug_x1_green"},
+            {"pos": [0, 1, marker_height], "color": [0, 0, 1], "name": "debug_y1_blue"},
+        ]
+        
+        for marker in markers:
+            builder = self.scene.create_actor_builder()
+            builder.add_sphere_visual(radius=radius, material=marker["color"])
+            builder.initial_pose = sapien.Pose(p=marker["pos"])
+            builder.build_static(name=marker["name"])
 
     def _build_table(self):
         """Build table with optional visual randomization."""
@@ -147,24 +193,74 @@ class Track1Env(BaseEnv):
             self.table = builder.build_static(name="table")
 
     def _build_tape_lines(self):
-        """Build black tape lines for grid visualization."""
+        """Build black tape lines forming 品-shape (4 squares with shared edges).
+        
+        DO NOT CNAHGE THIS FUNCTION. ONLY HUMAN CAN CHANGE IT.
+
+        Shared edges are drawn only once.
+        """
         tape_material = [0, 0, 0]
-        tape_half_width = 0.009
+        tape_half_width = 0.009  # 1.8cm total width
         tape_height = 0.001
         
-        tape_specs = [
-            # Horizontal lines
-            {"half_size": [0.27, tape_half_width, tape_height], "pos": [0.316, 0.178, 0.001], "name": "tape_bottom"},
-            {"half_size": [0.27, tape_half_width, tape_height], "pos": [0.316, 0.342, 0.001], "name": "tape_top"},
-            # Vertical lines
-            {"half_size": [tape_half_width, 0.082, tape_height], "pos": [0.051, 0.26, 0.001], "name": "tape_left_1"},
-            {"half_size": [tape_half_width, 0.082, tape_height], "pos": [0.217, 0.26, 0.001], "name": "tape_left_2"},
-            {"half_size": [tape_half_width, 0.082, tape_height], "pos": [0.238, 0.26, 0.001], "name": "tape_mid_1"},
-            {"half_size": [tape_half_width, 0.082, tape_height], "pos": [0.394, 0.26, 0.001], "name": "tape_mid_2"},
-            {"half_size": [tape_half_width, 0.082, tape_height], "pos": [0.414, 0.26, 0.001], "name": "tape_right_1"},
-            {"half_size": [tape_half_width, 0.082, tape_height], "pos": [0.580, 0.26, 0.001], "name": "tape_right_2"},
-        ]
+        tape_specs = []
         
+        x = [0 for _ in range(5)]
+        x[1] = 0.204 # 20.4cm
+        x[0] = x[1] - 0.166 - 2 * tape_half_width
+        x[4] = 0.6 # 60cm
+        x[2] = x[4] - 0.204 - 2 * tape_half_width
+        x[3] = x[4] - 0.204 + 0.166
+
+        y = [0 for i in range(3)]
+        y[1] = 0.15
+        y[2] = 0.15 + 0.164 + 2 * tape_half_width
+        y[0] = 0
+
+        tape_specs.append({
+            "half_size": [(x[3]- x[0]) / 2 + tape_half_width, tape_half_width, tape_height],
+            "pos": [(x[3] +  x[0]) / 2 + tape_half_width, y[1] + tape_half_width, 0.001],
+            "name": "row1"
+        })
+
+        tape_specs.append({
+            "half_size": [(x[3]- x[0]) / 2 + tape_half_width, tape_half_width, tape_height],
+            "pos": [(x[3] +  x[0]) / 2 + tape_half_width, y[2] + tape_half_width, 0.001],
+            "name": "row2"
+        })
+
+
+        tape_specs.append({
+            "half_size": [tape_half_width, (y[2] - y[1])/2 + tape_half_width , tape_height],
+            "pos": [x[0] + tape_half_width, (y[2] + y[1])/2 + tape_half_width, 0.001],
+            "name": "col1"
+        })
+
+        tape_specs.append({
+            "half_size": [tape_half_width, (y[2] - y[1])/2 + tape_half_width , tape_height],
+            "pos": [x[3] + tape_half_width, (y[2] + y[1])/2 + tape_half_width, 0.001],
+            "name": "col4"
+        })
+
+        tape_specs.append({
+            "half_size": [tape_half_width, (y[2] - y[0])/2 + tape_half_width , tape_height],
+            "pos": [x[1] + tape_half_width, (y[2] + y[0])/2 + tape_half_width, 0.001],
+            "name": "col2"
+        })
+        
+        tape_specs.append({
+            "half_size": [tape_half_width, (y[2] - y[0])/2 + tape_half_width , tape_height],
+            "pos": [x[2] + tape_half_width, (y[2] + y[0])/2 + tape_half_width, 0.001],
+            "name": "col3"
+        })
+
+        tape_specs.append({
+            "half_size": [tape_half_width, 0.6 / 2 , tape_height],
+            "pos": [x[4] + tape_half_width, 0.6 / 2, 0.001],
+            "name": "col5"
+        })
+        
+        # Build all tape lines
         for spec in tape_specs:
             builder = self.scene.create_actor_builder()
             builder.add_box_visual(half_size=spec["half_size"], material=tape_material)
