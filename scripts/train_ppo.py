@@ -261,13 +261,49 @@ def main(cfg: DictConfig):
     # Setup logging
     if cfg.wandb.enabled:
         import wandb
+        import subprocess
+        
+        # Get git commit hash
+        try:
+            git_commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], 
+                cwd=Path(__file__).parent.parent,
+                stderr=subprocess.DEVNULL
+            ).decode("utf-8").strip()[:8]
+        except:
+            git_commit = "unknown"
+        
+        # Get git diff (uncommitted changes)
+        try:
+            git_dirty = subprocess.check_output(
+                ["git", "status", "--porcelain"],
+                cwd=Path(__file__).parent.parent,
+                stderr=subprocess.DEVNULL
+            ).decode("utf-8").strip()
+            if git_dirty:
+                git_commit += "-dirty"
+        except:
+            pass
+        
         wandb.init(
             project=cfg.wandb.project,
             entity=cfg.wandb.entity,
             config=OmegaConf.to_container(cfg, resolve=True),
             name=run_name,
             save_code=True,
+            tags=[cfg.env.task, cfg.reward.reward_type if "reward" in cfg else "sparse"],
+            notes=f"Git commit: {git_commit}",
         )
+        
+        # Log git commit as config
+        wandb.config.update({"git_commit": git_commit})
+        
+        # Save Hydra config as artifact
+        config_artifact = wandb.Artifact(f"config-{run_name}", type="config")
+        config_artifact.add(wandb.Table(columns=["key", "value"], data=[
+            [k, str(v)] for k, v in OmegaConf.to_container(cfg, resolve=True).items()
+        ]), "config_table")
+        wandb.log_artifact(config_artifact)
     
     # Save to Hydra output directory
     output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
