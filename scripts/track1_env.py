@@ -319,10 +319,10 @@ class Track1Env(BaseEnv):
 
     def _get_obs_extra(self, info: dict):
         """Return extra observations."""
-        return {
-            "red_cube_pos": self.red_cube.pose.p,
-            "green_cube_pos": self.green_cube.pose.p,
-        }
+        obs = {"red_cube_pos": self.red_cube.pose.p}
+        if self.green_cube is not None:
+            obs["green_cube_pos"] = self.green_cube.pose.p
+        return obs
 
 
     def _load_lighting(self, options: dict):
@@ -686,22 +686,26 @@ class Track1Env(BaseEnv):
             default_pos=[0.497, 0.26, 0.015]
         )
         
-        # Green cube size depends on task
-        if self.task == "sort":
+        # Green cube: only load for stack and sort tasks
+        if self.task == "lift":
+            # Lift task: no green cube needed
+            self.green_cube = None
+        elif self.task == "sort":
             # Sort task: green cube is 1cm
-            green_half_size = 0.005
-            green_z = 0.005
-        else:
-            # Lift/Stack: green cube is 3cm (only used in Stack)
-            green_half_size = 0.015
-            green_z = 0.015
-        
-        self.green_cube = self._build_cube(
-            name="green_cube",
-            half_size=green_half_size,
-            base_color=[0, 1, 0, 1],
-            default_pos=[0.497, 0.30, green_z]
-        )
+            self.green_cube = self._build_cube(
+                name="green_cube",
+                half_size=0.005,
+                base_color=[0, 1, 0, 1],
+                default_pos=[0.497, 0.30, 0.005]
+            )
+        else:  # stack
+            # Stack task: green cube is 3cm
+            self.green_cube = self._build_cube(
+                name="green_cube",
+                half_size=0.015,
+                base_color=[0, 1, 0, 1],
+                default_pos=[0.497, 0.30, 0.015]
+            )
 
     def _build_cube(self, name: str, half_size: float, base_color: list, default_pos: list) -> Actor:
         """Build a cube with optional domain randomization."""
@@ -759,20 +763,20 @@ class Track1Env(BaseEnv):
             b = len(env_idx)
             
             if self.task == "lift":
-                # Red cube random in Right Grid
+                # Red cube random in Right Grid (no green cube in lift task)
                 red_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
-                # Hide green cube (move far away)
-                self.green_cube.set_pose(Pose.create_from_pq(p=torch.tensor([[-10, -10, -10]] * b, device=self.device)))
                 
             elif self.task == "stack":
                 # Both cubes in Right Grid, non-overlapping
+                # Minimum distance: 3cm * sqrt(2) ≈ 4.3cm (diagonal of cube)
+                min_dist = 0.043
                 red_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
                 green_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
-                # Ensure minimum distance
-                for _ in range(10):  # Try a few times to separate them
+                # Ensure minimum distance (retry until no collision)
+                for _ in range(100):  # Generous retry limit
                     dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
-                    overlap = dist < 0.05  # 5cm minimum
+                    overlap = dist < min_dist
                     if not overlap.any():
                         break
                     green_pos[overlap] = self._random_grid_position(overlap.sum().item(), self.grid_bounds["right"], z=0.015)
@@ -835,20 +839,23 @@ class Track1Env(BaseEnv):
         return {"success": success, "red_height": red_z}
 
     def _evaluate_stack(self):
-        """Stack: red cube on top of green cube, stable."""
+        """Stack: red cube on top of green cube, stable on table."""
         red_pos = self.red_cube.pose.p
         green_pos = self.green_cube.pose.p
         
-        # Check if red is above green (z difference ~ 3cm = cube size)
-        z_diff = red_pos[:, 2] - green_pos[:, 2]
-        z_ok = (z_diff > 0.02) & (z_diff < 0.05)
+        # Check green cube is on table (z ~ 1.5cm for 3cm cube)
+        green_on_table = (green_pos[:, 2] > 0.010) & (green_pos[:, 2] < 0.020)
         
-        # Check xy alignment (within 1.5cm)
+        # Check if red is above green (z difference ~ 3cm = cube size, allow ±0.5cm)
+        z_diff = red_pos[:, 2] - green_pos[:, 2]
+        z_ok = (z_diff > 0.025) & (z_diff < 0.035)
+        
+        # Check xy alignment (within 1.5cm for stability)
         xy_dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
         xy_ok = xy_dist < 0.015
         
-        success = z_ok & xy_ok
-        return {"success": success, "z_diff": z_diff, "xy_dist": xy_dist}
+        success = green_on_table & z_ok & xy_ok
+        return {"success": success, "green_on_table": green_on_table, "z_diff": z_diff, "xy_dist": xy_dist}
 
     def _evaluate_sort(self):
         """Sort: green in Left Grid, red in Right Grid."""
