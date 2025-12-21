@@ -397,10 +397,36 @@ class Track1Env(BaseEnv):
         return obs, reward, terminated, truncated, info
 
     def _get_obs_extra(self, info: dict):
-        """Return extra observations."""
-        obs = {"red_cube_pos": self.red_cube.pose.p}
+        """Return extra observations (state-based).
+        
+        Includes privileged information like object poses and relative vectors
+        to facilitate state-based training.
+        """
+        obs = dict()
+        
+        # 1. Object State
+        obs["red_cube_pos"] = self.red_cube.pose.p
+        obs["red_cube_rot"] = self.red_cube.pose.q
+        
         if self.green_cube is not None:
             obs["green_cube_pos"] = self.green_cube.pose.p
+            obs["green_cube_rot"] = self.green_cube.pose.q
+
+        # 2. End-Effector (TCP) State (Right Arm)
+        gripper_pos = self._get_gripper_pos()
+        obs["tcp_pos"] = gripper_pos
+        
+        # 3. Relative State (Critical for RL efficiency)
+        # TCP to Red Cube
+        obs["tcp_to_red_pos"] = obs["red_cube_pos"] - obs["tcp_pos"]
+        
+        # Lift target height diff
+        # obs["red_lift_height"] = obs["red_cube_pos"][:, 2:3]  # Already in pos
+        
+        if self.task == "stack" and self.green_cube is not None:
+            # Red to Green (Target)
+            obs["red_to_green_pos"] = obs["green_cube_pos"] - obs["red_cube_pos"]
+            
         return obs
 
 

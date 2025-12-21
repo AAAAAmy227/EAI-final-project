@@ -96,23 +96,28 @@ class NatureCNN(nn.Module):
         super().__init__()
         self.out_features = 0
         feature_size = 256
-        in_channels = sample_obs["rgb"].shape[-1]
         
-        self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=8, stride=4, padding=0),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
-            nn.ReLU(),
-            nn.Flatten(),
-        )
-        
-        # Compute flattened size
-        with torch.no_grad():
-            n_flatten = self.cnn(sample_obs["rgb"].float().permute(0, 3, 1, 2).cpu()).shape[1]
-        self.fc = nn.Sequential(nn.Linear(n_flatten, feature_size), nn.ReLU())
-        self.out_features += feature_size
+        # Check if we have RGB
+        if "rgb" in sample_obs:
+            in_channels = sample_obs["rgb"].shape[-1]
+            self.cnn = nn.Sequential(
+                nn.Conv2d(in_channels, 32, kernel_size=8, stride=4, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+                nn.ReLU(),
+                nn.Flatten(),
+            )
+            
+            # Compute flattened size
+            with torch.no_grad():
+                n_flatten = self.cnn(sample_obs["rgb"].float().permute(0, 3, 1, 2).cpu()).shape[1]
+            self.fc = nn.Sequential(nn.Linear(n_flatten, feature_size), nn.ReLU())
+            self.out_features += feature_size
+        else:
+            self.cnn = None
+            self.fc = None
 
         if "state" in sample_obs:
             state_size = sample_obs["state"].shape[-1]
@@ -124,8 +129,9 @@ class NatureCNN(nn.Module):
     def forward(self, observations) -> torch.Tensor:
         encoded = []
         # Process RGB
-        rgb = observations["rgb"].float().permute(0, 3, 1, 2) / 255.0
-        encoded.append(self.fc(self.cnn(rgb)))
+        if self.cnn is not None:
+            rgb = observations["rgb"].float().permute(0, 3, 1, 2) / 255.0
+            encoded.append(self.fc(self.cnn(rgb)))
         
         # Process state if available
         if self.state_fc is not None and "state" in observations:
@@ -134,11 +140,34 @@ class NatureCNN(nn.Module):
         return torch.cat(encoded, dim=1)
 
 
+class MLP(nn.Module):
+    """MLP feature extractor for state-based observations."""
+    def __init__(self, input_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.Tanh(),
+            nn.Linear(256, 256),
+            nn.Tanh(),
+        )
+        self.out_features = 256
+        
+    def forward(self, x):
+        return self.net(x)
+
+
 class Agent(nn.Module):
     """PPO Agent with actor-critic architecture."""
     def __init__(self, envs, sample_obs):
         super().__init__()
-        self.feature_net = NatureCNN(sample_obs=sample_obs)
+        
+        # Handle dict vs box observation
+        if isinstance(sample_obs, dict):
+            self.feature_net = NatureCNN(sample_obs=sample_obs)
+        else:
+            # Assume flat state vector
+            self.feature_net = MLP(input_dim=sample_obs.shape[-1])
+            
         latent_size = self.feature_net.out_features
         
         self.critic = nn.Sequential(
@@ -205,7 +234,12 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False):
     )
     
     # Flatten observations
-    env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=cfg.env.include_state)
+    if cfg.env.obs_mode == "state":
+        # For state mode, we don't need RGB processing
+        env = FlattenRGBDObservationWrapper(env, rgb=False, depth=False, state=True)
+    else:
+        # For RGB mode
+        env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=cfg.env.include_state)
     
     return env
 
