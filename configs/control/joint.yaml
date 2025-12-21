@@ -1,0 +1,7 @@
+# Joint Delta Position Control
+# Action: 6 dim (5 arm + 1 gripper)
+# Actions are delta from CURRENT joint positions
+control_mode: pd_joint_delta_pos
+normalize_action: true
+delta_arm: 0.05      # rad per step
+delta_gripper: 0.2   # rad per step

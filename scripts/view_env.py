@@ -24,9 +24,12 @@ def main():
     parser.add_argument("--camera-mode", type=str, default="direct_pinhole",
                         choices=["distorted", "distort-twice", "direct_pinhole"],
                         help="Camera output mode: distorted (raw fisheye), distort-twice (rectified), direct_pinhole (efficient render)")
+    parser.add_argument("--control-mode", type=str, default="pd_joint_target_delta_pos",
+                        choices=["pd_joint_delta_pos", "pd_joint_target_delta_pos", "pd_ee_delta_pos"],
+                        help="Control mode: joint, joint_target, or ee")
     args = parser.parse_args()
     
-    print(f"Starting Track1 environment with task={args.task}, camera_mode={args.camera_mode}")
+    print(f"Starting Track1 environment with task={args.task}, camera_mode={args.camera_mode}, control_mode={args.control_mode}")
     print("Controls:")
     print("  - Mouse: Rotate camera view")
     print("  - Scroll: Zoom in/out")
@@ -41,6 +44,7 @@ def main():
         task=args.task,
         domain_randomization=args.domain_randomization,
         camera_mode=args.camera_mode,
+        control_mode=args.control_mode,
         num_envs=1,
     )
     

@@ -30,6 +30,7 @@ class Track1Env(BaseEnv):
         task: str = "lift",  # "lift", "stack", "sort"
         domain_randomization: bool = True,
         camera_mode: str = "direct_pinhole",  # "distorted", "distort-twice", "direct_pinhole"
+        control_mode: str = "pd_joint_target_delta_pos",  # control mode from Hydra config
         render_scale: int = 3,
         **kwargs
     ):
@@ -49,7 +50,7 @@ class Track1Env(BaseEnv):
         # Precompute camera processing maps if needed (after super init so device is ready)
         self._setup_camera_processing_maps()
             
-        super().__init__(*args, robot_uids=robot_uids, **kwargs)
+        super().__init__(*args, robot_uids=robot_uids, control_mode=control_mode, **kwargs)
 
         self._setup_device()
 

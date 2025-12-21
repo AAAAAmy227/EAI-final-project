@@ -66,8 +66,14 @@ class SO101(BaseAgent):
 
     @property
     def _controller_configs(self):
+        # Get joint names
+        all_joint_names = [joint.name for joint in self.robot.active_joints]
+        arm_joint_names = all_joint_names[:5]  # First 5 joints are arm
+        gripper_joint_names = all_joint_names[5:]  # Last joint is gripper
+        
+        # Absolute position control (no normalization)
         pd_joint_pos = PDJointPosControllerConfig(
-            [joint.name for joint in self.robot.active_joints],
+            all_joint_names,
             lower=None,
             upper=None,
             stiffness=[1e3] * 6,
@@ -76,8 +82,9 @@ class SO101(BaseAgent):
             normalize_action=False,
         )
 
+        # Delta position control from CURRENT position
         pd_joint_delta_pos = PDJointPosControllerConfig(
-            [joint.name for joint in self.robot.active_joints],
+            all_joint_names,
             [-0.05, -0.05, -0.05, -0.05, -0.05, -0.2],
             [0.05, 0.05, 0.05, 0.05, 0.05, 0.2],
             stiffness=[1e3] * 6,
@@ -85,15 +92,49 @@ class SO101(BaseAgent):
             force_limit=100,
             use_delta=True,
             use_target=False,
+            normalize_action=True,
         )
 
+        # Delta position control from TARGET position (recommended for sim2real)
         pd_joint_target_delta_pos = copy.deepcopy(pd_joint_delta_pos)
         pd_joint_target_delta_pos.use_target = True
 
+        # End effector position control (arm) + joint control (gripper)
+        arm_pd_ee_delta_pos = PDEEPosControllerConfig(
+            arm_joint_names,
+            pos_lower=-0.02,
+            pos_upper=0.02,
+            stiffness=[1e3] * 5,
+            damping=[1e2] * 5,
+            force_limit=100,
+            ee_link="gripper_link",
+            urdf_path=self.urdf_path,
+            use_delta=True,
+            use_target=True,
+            normalize_action=True,
+        )
+        
+        gripper_pd_joint_delta_pos = PDJointPosControllerConfig(
+            gripper_joint_names,
+            lower=[-0.2],
+            upper=[0.2],
+            stiffness=[1e3],
+            damping=[1e2],
+            force_limit=100,
+            use_delta=True,
+            normalize_action=True,
+        )
+        
+        pd_ee_delta_pos = dict(
+            arm=arm_pd_ee_delta_pos,
+            gripper=gripper_pd_joint_delta_pos,
+        )
+
         controller_configs = dict(
-            pd_joint_delta_pos=pd_joint_delta_pos,
             pd_joint_pos=pd_joint_pos,
+            pd_joint_delta_pos=pd_joint_delta_pos,
             pd_joint_target_delta_pos=pd_joint_target_delta_pos,
+            pd_ee_delta_pos=pd_ee_delta_pos,
         )
         return deepcopy_dict(controller_configs)
 

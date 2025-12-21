@@ -1,0 +1,8 @@
+# End Effector Position Control with Gripper
+# Action: 4 dim (3 xyz position + 1 gripper)
+# Uses inverse kinematics to compute joint targets
+control_mode: pd_ee_delta_pos
+normalize_action: true
+ee_link: gripper_link
+pos_delta: 0.02      # meters per step
+delta_gripper: 0.2   # rad per step

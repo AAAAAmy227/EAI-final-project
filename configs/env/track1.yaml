@@ -1,0 +1,7 @@
+# Track1 Environment Configuration
+task: lift  # lift, stack, sort
+domain_randomization: true
+camera_mode: direct_pinhole  # direct_pinhole, distorted, distort-twice
+render_scale: 3
+max_episode_steps: 200
+num_envs: 1
