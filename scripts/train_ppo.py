@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""PPO Training Script for Track1 Environment.
-
-Based on ManiSkill's ppo_rgb.py baseline, adapted for Track1 tasks.
+"""PPO Training Script for Track1 Environment using Hydra.
 
 Usage:
-    python scripts/train_ppo.py --task lift --num-envs 128
-    python scripts/train_ppo.py --task lift --num-envs 512 --track  # with wandb
+    python -m scripts.train_ppo                          # Use default config
+    python -m scripts.train_ppo env.task=stack           # Override task
+    python -m scripts.train_ppo training.num_envs=512    # Override num_envs
+    python -m scripts.train_ppo wandb.enabled=true       # Enable wandb
 """
 
 from collections import defaultdict
 import os
+from pathlib import Path
 import random
 import time
-from dataclasses import dataclass
-from typing import Optional
 
 import gymnasium as gym
+import hydra
 import numpy as np
+from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import tyro
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
 
@@ -31,83 +31,8 @@ from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
-# Must run as: python -m scripts.train_ppo
+# Import Track1 environment
 from .track1_env import Track1Env
-
-
-@dataclass
-class Args:
-    exp_name: Optional[str] = None
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "Track1-PPO"
-    """the wandb's project name"""
-    wandb_entity: Optional[str] = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = True
-    """whether to capture videos of the agent performances"""
-    save_model: bool = True
-    """whether to save model"""
-    checkpoint: Optional[str] = None
-    """path to a pretrained checkpoint"""
-
-    # Track1 specific arguments
-    task: str = "lift"
-    """task to train: lift, stack, or sort"""
-    control_mode: str = "pd_joint_target_delta_pos"
-    """control mode for the robot"""
-    camera_mode: str = "direct_pinhole"
-    """camera mode: direct_pinhole, distorted"""
-    include_state: bool = True
-    """whether to include proprioception state in observations"""
-
-    # PPO hyperparameters
-    total_timesteps: int = 10_000_000
-    """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
-    """the learning rate of the optimizer"""
-    num_envs: int = 128
-    """the number of parallel environments"""
-    num_eval_envs: int = 8
-    """the number of parallel evaluation environments"""
-    num_steps: int = 50
-    """the number of steps per rollout"""
-    num_eval_steps: int = 100
-    """the number of steps for evaluation"""
-    gamma: float = 0.8
-    """the discount factor gamma"""
-    gae_lambda: float = 0.9
-    """the lambda for GAE"""
-    num_minibatches: int = 32
-    """the number of mini-batches"""
-    update_epochs: int = 4
-    """the K epochs to update the policy"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient"""
-    ent_coef: float = 0.0
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
-    max_grad_norm: float = 0.5
-    """the maximum norm for the gradient clipping"""
-    target_kl: float = 0.2
-    """the target KL divergence threshold"""
-    reward_scale: float = 1.0
-    """Scale the reward by this factor"""
-    eval_freq: int = 25
-    """evaluation frequency in terms of iterations"""
-
-    # Runtime computed
-    batch_size: int = 0
-    minibatch_size: int = 0
-    num_iterations: int = 0
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -254,14 +179,18 @@ class Agent(nn.Module):
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
 
-def make_env(args, num_envs, for_eval=False):
+def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False):
     """Create Track1 environment with proper wrappers."""
+    # Build reward config from Hydra config
+    reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
+    
     env_kwargs = dict(
-        task=args.task,
-        control_mode=args.control_mode,
-        camera_mode=args.camera_mode,
-        obs_mode="rgb",
-        reward_mode="sparse",  # TODO: implement dense reward
+        task=cfg.env.task,
+        control_mode=cfg.env.control_mode,
+        camera_mode=cfg.env.camera_mode,
+        obs_mode=cfg.env.obs_mode,
+        reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
+        reward_config=reward_config,
         render_mode="all",
         sim_backend="physx_cuda",
     )
@@ -269,122 +198,126 @@ def make_env(args, num_envs, for_eval=False):
     reconfiguration_freq = 1 if for_eval else None
     
     env = gym.make(
-        "Track1-v0",
+        cfg.env.env_id,
         num_envs=num_envs,
         reconfiguration_freq=reconfiguration_freq,
         **env_kwargs
     )
     
     # Flatten observations
-    env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=args.include_state)
+    env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=cfg.env.include_state)
     
     return env
 
 
-def main():
-    args = tyro.cli(Args)
-    args.batch_size = args.num_envs * args.num_steps
-    args.minibatch_size = args.batch_size // args.num_minibatches
-    args.num_iterations = args.total_timesteps // args.batch_size
+@hydra.main(version_base=None, config_path="../configs", config_name="train")
+def main(cfg: DictConfig):
+    """Main training function with Hydra configuration."""
+    print(OmegaConf.to_yaml(cfg))
+    
+    # Compute derived values
+    batch_size = cfg.training.num_envs * cfg.training.num_steps
+    minibatch_size = batch_size // cfg.ppo.num_minibatches
+    num_iterations = cfg.training.total_timesteps // batch_size
 
-    if args.exp_name is None:
-        args.exp_name = f"track1_{args.task}"
-    run_name = f"{args.exp_name}__{args.seed}__{int(time.time())}"
+    # Experiment name
+    exp_name = cfg.exp_name or f"track1_{cfg.env.task}"
+    run_name = f"{exp_name}__{cfg.seed}__{int(time.time())}"
 
     # Seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    torch.backends.cudnn.deterministic = True
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Create environments
-    print(f"Creating {args.num_envs} training environments...")
-    envs = make_env(args, args.num_envs)
+    print(f"Creating {cfg.training.num_envs} training environments...")
+    envs = make_env(cfg, cfg.training.num_envs)
     
-    print(f"Creating {args.num_eval_envs} evaluation environments...")
-    eval_envs = make_env(args, args.num_eval_envs, for_eval=True)
+    print(f"Creating {cfg.training.num_eval_envs} evaluation environments...")
+    eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True)
 
     # Add video recording for eval
-    if args.capture_video:
+    if cfg.capture_video:
         eval_output_dir = f"runs/{run_name}/videos"
         print(f"Saving eval videos to {eval_output_dir}")
         eval_envs = RecordEpisode(
             eval_envs,
             output_dir=eval_output_dir,
             save_trajectory=False,
-            max_steps_per_video=args.num_eval_steps,
+            max_steps_per_video=cfg.training.num_eval_steps,
             video_fps=30
         )
 
     # Wrap with ManiSkillVectorEnv
-    envs = ManiSkillVectorEnv(envs, args.num_envs, ignore_terminations=True, record_metrics=True)
-    eval_envs = ManiSkillVectorEnv(eval_envs, args.num_eval_envs, ignore_terminations=True, record_metrics=True)
+    envs = ManiSkillVectorEnv(envs, cfg.training.num_envs, ignore_terminations=True, record_metrics=True)
+    eval_envs = ManiSkillVectorEnv(eval_envs, cfg.training.num_eval_envs, ignore_terminations=True, record_metrics=True)
 
     assert isinstance(envs.single_action_space, gym.spaces.Box), "Only continuous action space supported"
 
     # Setup logging
-    if args.track:
+    if cfg.wandb.enabled:
         import wandb
         wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            config=vars(args),
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            config=OmegaConf.to_container(cfg, resolve=True),
             name=run_name,
             save_code=True,
         )
     
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n" + "\n".join([f"|{k}|{v}|" for k, v in vars(args).items()]),
-    )
+    # Save to Hydra output directory
+    output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+    writer = SummaryWriter(output_dir / "tensorboard")
+    writer.add_text("config", f"```yaml\n{OmegaConf.to_yaml(cfg)}\n```")
 
     # Initialize agent
     print("Initializing agent...")
-    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs, _ = envs.reset(seed=cfg.seed)
     agent = Agent(envs, sample_obs=next_obs).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    optimizer = optim.Adam(agent.parameters(), lr=cfg.ppo.learning_rate, eps=1e-5)
 
-    if args.checkpoint:
-        print(f"Loading checkpoint from {args.checkpoint}")
-        agent.load_state_dict(torch.load(args.checkpoint))
+    if cfg.checkpoint:
+        print(f"Loading checkpoint from {cfg.checkpoint}")
+        agent.load_state_dict(torch.load(cfg.checkpoint))
 
     # Storage setup
-    obs_buffer = DictArray((args.num_steps, args.num_envs), envs.single_observation_space, device=device)
-    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    obs_buffer = DictArray((cfg.training.num_steps, cfg.training.num_envs), envs.single_observation_space, device=device)
+    actions = torch.zeros((cfg.training.num_steps, cfg.training.num_envs) + envs.single_action_space.shape).to(device)
+    logprobs = torch.zeros((cfg.training.num_steps, cfg.training.num_envs)).to(device)
+    rewards = torch.zeros((cfg.training.num_steps, cfg.training.num_envs)).to(device)
+    dones = torch.zeros((cfg.training.num_steps, cfg.training.num_envs)).to(device)
+    values = torch.zeros((cfg.training.num_steps, cfg.training.num_envs)).to(device)
 
     # Training loop
     global_step = 0
     start_time = time.time()
-    next_done = torch.zeros(args.num_envs, device=device)
+    next_done = torch.zeros(cfg.training.num_envs, device=device)
 
     print(f"\n{'='*60}")
-    print(f"Training PPO on Track1 {args.task}")
-    print(f"num_iterations={args.num_iterations}, num_envs={args.num_envs}")
-    print(f"batch_size={args.batch_size}, minibatch_size={args.minibatch_size}")
+    print(f"Training PPO on Track1 {cfg.env.task}")
+    print(f"Reward type: {cfg.reward.reward_type if 'reward' in cfg else 'sparse'}")
+    print(f"num_iterations={num_iterations}, num_envs={cfg.training.num_envs}")
+    print(f"batch_size={batch_size}, minibatch_size={minibatch_size}")
     print(f"{'='*60}\n")
 
-    for iteration in range(1, args.num_iterations + 1):
-        print(f"Iteration {iteration}/{args.num_iterations}, global_step={global_step}")
+    for iteration in range(1, num_iterations + 1):
+        print(f"Iteration {iteration}/{num_iterations}, global_step={global_step}")
         
-        final_values = torch.zeros((args.num_steps, args.num_envs), device=device)
+        final_values = torch.zeros((cfg.training.num_steps, cfg.training.num_envs), device=device)
         agent.eval()
 
         # Evaluation
-        if iteration % args.eval_freq == 1:
+        if iteration % cfg.training.eval_freq == 1:
             print("Running evaluation...")
             eval_obs, _ = eval_envs.reset()
             eval_metrics = defaultdict(list)
             num_episodes = 0
             
-            for _ in range(args.num_eval_steps):
+            for _ in range(cfg.training.num_eval_steps):
                 with torch.no_grad():
                     eval_action = agent.get_action(eval_obs, deterministic=True)
                 eval_obs, _, _, _, eval_infos = eval_envs.step(eval_action)
@@ -395,21 +328,22 @@ def main():
                     for k, v in eval_infos["final_info"]["episode"].items():
                         eval_metrics[k].append(v)
             
-            print(f"  Evaluated {args.num_eval_steps * args.num_eval_envs} steps, {num_episodes} episodes")
+            print(f"  Evaluated {cfg.training.num_eval_steps * cfg.training.num_eval_envs} steps, {num_episodes} episodes")
             for k, v in eval_metrics.items():
-                mean_val = torch.stack(v).float().mean().item()
-                writer.add_scalar(f"eval/{k}", mean_val, global_step)
-                print(f"  eval/{k} = {mean_val:.4f}")
+                if len(v) > 0:
+                    mean_val = torch.stack(v).float().mean().item()
+                    writer.add_scalar(f"eval/{k}", mean_val, global_step)
+                    print(f"  eval/{k} = {mean_val:.4f}")
 
         # Save model
-        if args.save_model and iteration % args.eval_freq == 1:
-            model_path = f"runs/{run_name}/ckpt_{iteration}.pt"
+        if cfg.save_model and iteration % cfg.training.eval_freq == 1:
+            model_path = output_dir / f"ckpt_{iteration}.pt"
             torch.save(agent.state_dict(), model_path)
             print(f"Model saved to {model_path}")
 
         # Rollout
-        for step in range(args.num_steps):
-            global_step += args.num_envs
+        for step in range(cfg.training.num_steps):
+            global_step += cfg.training.num_envs
             obs_buffer[step] = next_obs
             dones[step] = next_done
 
@@ -421,7 +355,7 @@ def main():
 
             next_obs, reward, terminations, truncations, infos = envs.step(action)
             next_done = (terminations | truncations).float()
-            rewards[step] = reward * args.reward_scale
+            rewards[step] = reward * cfg.ppo.reward_scale
 
             if "final_info" in infos:
                 final_info = infos["final_info"]
@@ -440,8 +374,8 @@ def main():
             advantages = torch.zeros_like(rewards)
             lastgaelam = 0
             
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
+            for t in reversed(range(cfg.training.num_steps)):
+                if t == cfg.training.num_steps - 1:
                     next_not_done = 1.0 - next_done
                     nextvalues = next_value
                 else:
@@ -449,8 +383,8 @@ def main():
                     nextvalues = values[t + 1]
                 
                 real_next_values = next_not_done * nextvalues + final_values[t]
-                delta = rewards[t] + args.gamma * real_next_values - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * next_not_done * lastgaelam
+                delta = rewards[t] + cfg.ppo.gamma * real_next_values - values[t]
+                advantages[t] = lastgaelam = delta + cfg.ppo.gamma * cfg.ppo.gae_lambda * next_not_done * lastgaelam
             
             returns = advantages + values
 
@@ -464,13 +398,13 @@ def main():
 
         # PPO update
         agent.train()
-        b_inds = np.arange(args.batch_size)
+        b_inds = np.arange(batch_size)
         clipfracs = []
 
-        for epoch in range(args.update_epochs):
+        for epoch in range(cfg.ppo.update_epochs):
             np.random.shuffle(b_inds)
-            for start in range(0, args.batch_size, args.minibatch_size):
-                end = start + args.minibatch_size
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
@@ -479,9 +413,9 @@ def main():
 
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs.append(((ratio - 1.0).abs() > args.clip_coef).float().mean().item())
+                    clipfracs.append(((ratio - 1.0).abs() > cfg.ppo.clip_coef).float().mean().item())
 
-                if args.target_kl is not None and approx_kl > args.target_kl:
+                if cfg.ppo.target_kl is not None and approx_kl > cfg.ppo.target_kl:
                     break
 
                 mb_advantages = b_advantages[mb_inds]
@@ -489,7 +423,7 @@ def main():
 
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - cfg.ppo.clip_coef, 1 + cfg.ppo.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value loss
@@ -499,14 +433,14 @@ def main():
                 # Entropy loss
                 entropy_loss = entropy.mean()
 
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - cfg.ppo.ent_coef * entropy_loss + v_loss * cfg.ppo.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                nn.utils.clip_grad_norm_(agent.parameters(), cfg.ppo.max_grad_norm)
                 optimizer.step()
 
-            if args.target_kl is not None and approx_kl > args.target_kl:
+            if cfg.ppo.target_kl is not None and approx_kl > cfg.ppo.target_kl:
                 break
 
         # Logging
@@ -521,14 +455,19 @@ def main():
         print(f"  SPS: {sps}")
 
     # Save final model
-    if args.save_model:
-        model_path = f"runs/{run_name}/final_ckpt.pt"
+    if cfg.save_model:
+        model_path = output_dir / "final_ckpt.pt"
         torch.save(agent.state_dict(), model_path)
         print(f"Final model saved to {model_path}")
 
     envs.close()
     eval_envs.close()
     writer.close()
+    
+    if cfg.wandb.enabled:
+        import wandb
+        wandb.finish()
+    
     print("Training complete!")
 
 

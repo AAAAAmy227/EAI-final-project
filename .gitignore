@@ -16,3 +16,4 @@ lerobot-sim2real/
 .venv/
 lerobot/
 runs/
+outputs/
