@@ -32,12 +32,16 @@ class Track1Env(BaseEnv):
         camera_mode: str = "direct_pinhole",  # "distorted", "distort-twice", "direct_pinhole"
         control_mode: str = "pd_joint_target_delta_pos",  # control mode from Hydra config
         render_scale: int = 3,
+        reward_config: dict = None,  # Reward configuration from Hydra
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
 
         self.render_scale = render_scale
+        
+        # Setup reward configuration (default values if not provided)
+        self._setup_reward_config(reward_config)
         
         # Validate camera_mode
         valid_modes = ["distorted", "distort-twice", "direct_pinhole"]
@@ -54,6 +58,34 @@ class Track1Env(BaseEnv):
 
         self._setup_device()
         self._setup_single_arm_action_space()
+        
+    def _setup_reward_config(self, reward_config):
+        """Setup reward configuration with defaults."""
+        if reward_config is None:
+            reward_config = {}
+        
+        # Reward type: "parallel" or "staged"
+        self.reward_type = reward_config.get("reward_type", "staged")
+        
+        # Weights
+        weights = reward_config.get("weights", {})
+        self.reward_weights = {
+            "reach": weights.get("reach", 1.0),
+            "grasp": weights.get("grasp", 2.0),
+            "lift": weights.get("lift", 5.0),
+            "success": weights.get("success", 10.0),
+        }
+        
+        # Scaling
+        self.reach_scale = reward_config.get("reach_scale", 5.0)
+        
+        # Stage thresholds
+        stages = reward_config.get("stages", {})
+        self.stage_thresholds = {
+            "reach": stages.get("reach_threshold", 0.05),
+            "grasp": stages.get("grasp_threshold", 0.03),
+            "lift": stages.get("lift_target", 0.05),
+        }
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -957,3 +989,164 @@ class Track1Env(BaseEnv):
         success = red_in_right & green_in_left
         return {"success": success, "red_in_right": red_in_right, "green_in_left": green_in_left}
 
+    # ==================== Dense Reward Functions ====================
+    
+    def compute_dense_reward(self, obs, action, info):
+        """Compute dense reward based on task."""
+        if self.task == "lift":
+            return self._compute_lift_dense_reward(info)
+        elif self.task == "stack":
+            return self._compute_stack_dense_reward(info)
+        elif self.task == "sort":
+            return self._compute_sort_dense_reward(info)
+        else:
+            return torch.zeros(self.num_envs, device=self.device)
+
+    def compute_normalized_dense_reward(self, obs, action, info):
+        """Compute normalized dense reward (scaled to roughly [0, 1])."""
+        reward = self.compute_dense_reward(obs, action, info)
+        # Normalize by maximum expected reward
+        max_reward = 10.0  # Approximate max for success bonus
+        return reward / max_reward
+
+    def _get_gripper_pos(self):
+        """Get the gripper (end-effector) position for the right arm."""
+        # Right arm is index 0 (so101-0)
+        right_agent = self.agent.agents[0]
+        gripper_link = right_agent.robot.links_map.get("gripper_link")
+        if gripper_link is not None:
+            return gripper_link.pose.p
+        # Fallback: use last link
+        return right_agent.robot.links[-1].pose.p
+
+    def _compute_lift_dense_reward(self, info):
+        """Dense reward for Lift task.
+        
+        Supports two modes via self.reward_type:
+        - "parallel": All reward components computed simultaneously
+        - "staged": Reward components unlocked sequentially (curriculum)
+        
+        Components:
+        1. reach_reward: Encourage gripper to approach cube
+        2. grasp_reward: Bonus for having cube near gripper (pseudo-grasp)
+        3. lift_reward: Reward proportional to cube height
+        4. success_bonus: Extra reward when lift > threshold
+        """
+        # Get config values
+        w = self.reward_weights
+        thresholds = self.stage_thresholds
+        
+        gripper_pos = self._get_gripper_pos()
+        cube_pos = self.red_cube.pose.p
+        distance = torch.norm(gripper_pos - cube_pos, dim=1)
+        cube_height = cube_pos[:, 2]
+        
+        if self.reward_type == "staged":
+            # ===== STAGED REWARD (Curriculum) =====
+            # Each stage only gives reward if previous stage condition is met
+            
+            # Stage 1: Reach (always active)
+            reach_reward = 1.0 - torch.tanh(distance * self.reach_scale)
+            
+            # Stage 2: Grasp (only if reached - within reach_threshold)
+            has_reached = distance < thresholds["reach"]
+            grasp_reward = torch.where(
+                has_reached & (distance < thresholds["grasp"]),
+                torch.ones_like(distance),
+                torch.zeros_like(distance)
+            )
+            
+            # Stage 3: Lift (only if grasped - within grasp_threshold)
+            has_grasped = distance < thresholds["grasp"]
+            lift_reward = torch.where(
+                has_grasped,
+                cube_height,  # Height reward
+                torch.zeros_like(cube_height)
+            )
+            
+            # Stage 4: Success (cube lifted above lift_target)
+            success_bonus = torch.where(
+                cube_height > thresholds["lift"],
+                torch.ones_like(cube_height),
+                torch.zeros_like(cube_height)
+            )
+        else:
+            # ===== PARALLEL REWARD (All at once) =====
+            # All components computed independently
+            
+            reach_reward = 1.0 - torch.tanh(distance * self.reach_scale)
+            grasp_reward = (distance < thresholds["grasp"]).float()
+            lift_reward = torch.clamp(cube_height, min=0.0)
+            
+            success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
+            success_bonus = success.float()
+        
+        # Weighted sum
+        reward = (w["reach"] * reach_reward + 
+                  w["grasp"] * grasp_reward + 
+                  w["lift"] * lift_reward + 
+                  w["success"] * success_bonus)
+        
+        return reward
+
+    def _compute_stack_dense_reward(self, info):
+        """Dense reward for Stack task.
+        
+        Components:
+        1. reach_red: Approach red cube
+        2. grasp_red: Grasp red cube
+        3. lift_red: Lift red cube above green
+        4. align: Align red over green (xy distance)
+        5. place: Place red on green
+        6. success_bonus
+        """
+        w_reach = 1.0
+        w_grasp = 2.0
+        w_lift = 2.0
+        w_align = 3.0
+        w_place = 5.0
+        w_success = 10.0
+        
+        gripper_pos = self._get_gripper_pos()
+        red_pos = self.red_cube.pose.p
+        green_pos = self.green_cube.pose.p
+        
+        # 1. Reach reward
+        dist_to_red = torch.norm(gripper_pos - red_pos, dim=1)
+        reach_reward = 1.0 - torch.tanh(dist_to_red * 5.0)
+        
+        # 2. Grasp reward
+        is_grasping = dist_to_red < 0.03
+        grasp_reward = is_grasping.float()
+        
+        # 3. Lift reward (red above green)
+        z_diff = red_pos[:, 2] - green_pos[:, 2]
+        lift_reward = torch.clamp(z_diff, min=0.0, max=0.05)  # Cap at 5cm
+        
+        # 4. Alignment reward (xy distance between red and green)
+        xy_dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
+        align_reward = 1.0 - torch.tanh(xy_dist * 10.0)
+        
+        # 5. Place reward (red on top of green)
+        is_stacked = (z_diff > 0.025) & (z_diff < 0.04) & (xy_dist < 0.02)
+        place_reward = is_stacked.float()
+        
+        # 6. Success bonus
+        success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
+        success_bonus = success.float()
+        
+        reward = (w_reach * reach_reward +
+                  w_grasp * grasp_reward +
+                  w_lift * lift_reward +
+                  w_align * align_reward +
+                  w_place * place_reward +
+                  w_success * success_bonus)
+        
+        return reward
+
+    def _compute_sort_dense_reward(self, info):
+        """Dense reward for Sort task (placeholder - needs both arms)."""
+        # For sort task, we need more complex logic with both arms
+        # For now, use sparse reward
+        success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
+        return success.float() * 10.0
