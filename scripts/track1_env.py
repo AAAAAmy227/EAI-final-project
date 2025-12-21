@@ -53,6 +53,32 @@ class Track1Env(BaseEnv):
         super().__init__(*args, robot_uids=robot_uids, control_mode=control_mode, **kwargs)
 
         self._setup_device()
+        self._setup_single_arm_action_space()
+
+    def _setup_single_arm_action_space(self):
+        """For lift/stack tasks, only expose right arm action space."""
+        import gymnasium as gym
+        from gymnasium.vector.utils import batch_space
+        
+        # Check if this is a single-arm task
+        self.single_arm_mode = self.task in ["lift", "stack"]
+        
+        if self.single_arm_mode and self.agent is not None:
+            # Original action space is Dict({'so101-0': Box, 'so101-1': Box})
+            # We want to expose only 'so101-0' as a flat Box
+            if isinstance(self.single_action_space, gym.spaces.Dict):
+                # Get the right arm (so101-0) action space
+                self._right_arm_key = "so101-0"
+                self._left_arm_key = "so101-1"
+                
+                right_arm_space = self.single_action_space[self._right_arm_key]
+                
+                # Override action spaces to only expose right arm
+                self.single_action_space = right_arm_space
+                self.action_space = batch_space(self.single_action_space, n=self.num_envs)
+                
+                # Store original for step() to reconstruct full action
+                self._left_arm_action_dim = self.agent.single_action_space[self._left_arm_key].shape[0]
 
     def _setup_device(self):
         assert hasattr(self, 'device')
@@ -313,6 +339,26 @@ class Track1Env(BaseEnv):
         return obs, info
 
     def step(self, action):
+        # For single-arm mode (lift/stack), convert single-arm action to full multi-arm action
+        if getattr(self, 'single_arm_mode', False) and hasattr(self, '_left_arm_action_dim'):
+            import torch
+            # action is a tensor of shape (num_envs, right_arm_action_dim)
+            # We need to convert it to a dict for the multi-agent
+            if isinstance(action, (np.ndarray, torch.Tensor)):
+                if isinstance(action, np.ndarray):
+                    action = torch.tensor(action, device=self.device, dtype=torch.float32)
+                
+                # Create full action dict with zeros for left arm
+                left_arm_zeros = torch.zeros(
+                    (action.shape[0], self._left_arm_action_dim), 
+                    device=self.device, 
+                    dtype=action.dtype
+                )
+                action = {
+                    self._right_arm_key: action,
+                    self._left_arm_key: left_arm_zeros,
+                }
+        
         obs, reward, terminated, truncated, info = super().step(action)
         if self.camera_mode != "direct_pinhole":
             obs = self._apply_camera_processing(obs)
