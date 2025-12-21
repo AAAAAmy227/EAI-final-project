@@ -1,0 +1,16 @@
+# Dense reward configuration for Lift task
+reward_mode: "dense"
+
+# Reward weights (can tune these)
+weights:
+  reach: 1.0         # Approach cube
+  grasp: 2.0         # Successfully grasp
+  lift: 5.0          # Lift cube up
+  success: 10.0      # Task completion bonus
+
+# Distance scaling
+reach_scale: 5.0     # tanh(distance * scale) for reach reward
+
+# Thresholds
+grasp_threshold: 0.02    # Distance to consider "close enough" for grasping
+lift_target: 0.10        # Target lift height for success

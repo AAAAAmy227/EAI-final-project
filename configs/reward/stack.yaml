@@ -1,0 +1,15 @@
+# Dense reward configuration for Stack task
+reward_mode: "dense"
+
+weights:
+  reach_red: 1.0       # Approach red cube
+  grasp_red: 2.0       # Grasp red cube
+  lift_red: 3.0        # Lift red cube
+  reach_green: 1.0     # Move red cube toward green
+  place: 5.0           # Place red on green
+  success: 10.0        # Task completion
+
+reach_scale: 5.0
+grasp_threshold: 0.02
+stack_threshold: 0.03  # Red above green within this XY distance
+stack_height: 0.03     # Red needs to be this much above green

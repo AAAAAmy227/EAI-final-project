@@ -1,0 +1,43 @@
+# Default configuration for PPO training
+defaults:
+  - _self_
+  - env: track1
+  - reward: lift
+
+# Experiment settings
+exp_name: null
+seed: 1
+
+# Logging
+wandb:
+  enabled: false
+  project: "Track1-PPO"
+  entity: null
+
+# Training hyperparameters
+training:
+  total_timesteps: 10_000_000
+  num_envs: 128
+  num_eval_envs: 8
+  num_steps: 50
+  num_eval_steps: 100
+  eval_freq: 25
+
+# PPO hyperparameters
+ppo:
+  learning_rate: 3e-4
+  gamma: 0.8
+  gae_lambda: 0.9
+  num_minibatches: 32
+  update_epochs: 4
+  clip_coef: 0.2
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.2
+  reward_scale: 1.0
+
+# Model saving
+save_model: true
+capture_video: true
+checkpoint: null
