@@ -645,9 +645,17 @@ class Track1Env(BaseEnv):
         # q = [cos(pi/4), 0, 0, sin(pi/4)]
         rotation = [0.7071068, 0, 0, 0.7071068]
         
+        # Base y-position, randomized if domain_randomization is enabled
+        if self.domain_randomization:
+            left_y = np.random.uniform(0.01, 0.03)
+            right_y = np.random.uniform(0.01, 0.03)
+        else:
+            left_y = 0.02
+            right_y = 0.02
+        
         agent_poses = [
-            sapien.Pose(p=[0.119, 0.055, 0], q=rotation),  # Left Robot
-            sapien.Pose(p=[0.481, 0.055, 0], q=rotation)   # Right Robot
+            sapien.Pose(p=[0.119, left_y, 0], q=rotation),  # Left Robot
+            sapien.Pose(p=[0.481, right_y, 0], q=rotation)   # Right Robot
         ]
         
         # Enable per-env building for joint randomization
