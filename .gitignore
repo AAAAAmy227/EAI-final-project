@@ -17,3 +17,5 @@ lerobot-sim2real/
 lerobot/
 runs/
 outputs/
+LeanRL/
+wandb/

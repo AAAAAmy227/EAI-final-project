@@ -1,4 +1,7 @@
-
+"""
+Main training entry point for LeanRL-style PPO.
+Uses tensordict, torch.compile, CudaGraphModule, and WandB logging.
+"""
 import os
 import sys
 import time
@@ -9,7 +12,6 @@ import torch
 import numpy as np
 import wandb
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.tensorboard import SummaryWriter
 
 from scripts.training.runner import PPORunner
 
@@ -50,21 +52,13 @@ def main(cfg: DictConfig):
             entity=cfg.wandb.entity,
             config=OmegaConf.to_container(cfg, resolve=True),
             name=run_name,
-            sync_tensorboard=True,
             save_code=True,
-            tags=[cfg.env.task, cfg.reward.reward_type if "reward" in cfg else "sparse", cfg.env.obs_mode],
+            tags=[cfg.env.task, cfg.reward.reward_mode if "reward" in cfg else "sparse", cfg.env.obs_mode],
             notes=f"Git commit: {git_commit}"
         )
-    
-    # Logger
-    writer = SummaryWriter(output_dir / "tensorboard")
-    writer.add_text(
-        "hyperparameters",
-        f"```yaml\n{OmegaConf.to_yaml(cfg)}\n```"
-    )
 
     # Initialize Runner
-    runner = PPORunner(cfg, logger=writer)
+    runner = PPORunner(cfg)
     
     # Start Training
     try:
@@ -73,7 +67,6 @@ def main(cfg: DictConfig):
         print("Training interrupted by user.")
         runner.envs.close()
         runner.eval_envs.close()
-        writer.close()
         if cfg.wandb.enabled:
             wandb.finish()
             

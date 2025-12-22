@@ -10,9 +10,14 @@ seed: 1
 
 # Logging
 wandb:
-  enabled: false
+  enabled: true
   project: "Track1-PPO"
   entity: null
+
+# Optimization flags
+compile: true
+cudagraphs: true
+anneal_lr: true
 
 # Training hyperparameters
 training:

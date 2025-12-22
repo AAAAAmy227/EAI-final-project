@@ -1,4 +1,7 @@
-
+"""
+Common utilities for PPO training.
+GPU-native normalization wrappers and environment setup.
+"""
 import gymnasium as gym
 import torch
 import numpy as np
@@ -7,7 +10,7 @@ from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
-# Import Track1 environment (handle running as module)
+# Import Track1 environment
 try:
     from scripts.track1_env import Track1Env
 except ImportError:
@@ -16,53 +19,100 @@ except ImportError:
     sys.path.append(os.getcwd())
     from scripts.track1_env import Track1Env
 
-class DictArray:
-    """Helper class for handling dictionary observations in buffer."""
-    def __init__(self, buffer_shape, element_space, data_dict=None, device=None):
-        self.buffer_shape = buffer_shape
-        if data_dict:
-            self.data = data_dict
-        else:
-            assert isinstance(element_space, gym.spaces.Dict)
-            self.data = {}
-            for k, v in element_space.items():
-                if isinstance(v, gym.spaces.Dict):
-                    self.data[k] = DictArray(buffer_shape, v, device=device)
-                else:
-                    dtype = (torch.float32 if v.dtype in (np.float32, np.float64) else
-                             torch.uint8 if v.dtype == np.uint8 else
-                             torch.int32 if v.dtype == np.int32 else v.dtype)
-                    self.data[k] = torch.zeros(buffer_shape + v.shape, dtype=dtype, device=device)
 
-    def keys(self):
-        return self.data.keys()
+class RunningMeanStd:
+    """GPU-compatible running mean and standard deviation tracker."""
+    
+    def __init__(self, shape=(), device=None, epsilon=1e-4):
+        self.mean = torch.zeros(shape, device=device)
+        self.var = torch.ones(shape, device=device)
+        self.count = epsilon
+        self.device = device
+    
+    def update(self, x: torch.Tensor):
+        """Update statistics with a batch of observations."""
+        batch_mean = x.mean(dim=0)
+        batch_var = x.var(dim=0)
+        batch_count = x.shape[0]
+        self._update_from_moments(batch_mean, batch_var, batch_count)
+    
+    def _update_from_moments(self, batch_mean, batch_var, batch_count):
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+        
+        new_mean = self.mean + delta * batch_count / tot_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + delta ** 2 * self.count * batch_count / tot_count
+        new_var = M2 / tot_count
+        
+        self.mean = new_mean
+        self.var = new_var
+        self.count = tot_count
 
-    def __getitem__(self, index):
-        if isinstance(index, str):
-            return self.data[index]
-        return {k: v[index] for k, v in self.data.items()}
 
-    def __setitem__(self, index, value):
-        if isinstance(index, str):
-            self.data[index] = value
-        else:
-            for k, v in value.items():
-                self.data[k][index] = v
+class NormalizeObservationGPU(gym.Wrapper):
+    """GPU-native observation normalization wrapper."""
+    
+    def __init__(self, env, device=None, epsilon=1e-8, clip=10.0):
+        super().__init__(env)
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.epsilon = epsilon
+        self.clip = clip
+        
+        # Determine observation shape
+        obs_shape = env.single_observation_space.shape
+        self.rms = RunningMeanStd(shape=obs_shape, device=self.device)
+    
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        return self._normalize(obs), info
+    
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return self._normalize(obs), reward, terminated, truncated, info
+    
+    def _normalize(self, obs):
+        self.rms.update(obs)
+        normalized = (obs - self.rms.mean) / torch.sqrt(self.rms.var + self.epsilon)
+        return torch.clamp(normalized, -self.clip, self.clip)
 
-    @property
-    def shape(self):
-        return self.buffer_shape
 
-    def reshape(self, shape):
-        t = len(self.buffer_shape)
-        new_dict = {}
-        for k, v in self.data.items():
-            if isinstance(v, DictArray):
-                new_dict[k] = v.reshape(shape)
-            else:
-                new_dict[k] = v.reshape(shape + v.shape[t:])
-        new_buffer_shape = next(iter(new_dict.values())).shape[:len(shape)]
-        return DictArray(new_buffer_shape, None, data_dict=new_dict)
+class NormalizeRewardGPU(gym.Wrapper):
+    """GPU-native reward normalization wrapper using discounted return variance."""
+    
+    def __init__(self, env, device=None, gamma=0.99, epsilon=1e-8, clip=10.0):
+        super().__init__(env)
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.clip = clip
+        self.rms = RunningMeanStd(shape=(), device=self.device)
+        self.returns = None
+    
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        # Initialize returns tracker
+        num_envs = obs.shape[0]
+        self.returns = torch.zeros(num_envs, device=self.device)
+        return obs, info
+    
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        # Update discounted returns
+        self.returns = self.returns * self.gamma + reward
+        self.rms.update(self.returns.unsqueeze(1))
+        
+        # Normalize reward
+        normalized_reward = reward / torch.sqrt(self.rms.var + self.epsilon)
+        normalized_reward = torch.clamp(normalized_reward, -self.clip, self.clip)
+        
+        # Reset returns for done environments
+        done = terminated | truncated
+        self.returns = self.returns * (~done).float()
+        
+        return obs, normalized_reward, terminated, truncated, info
 
 
 class FlattenStateWrapper(gym.ObservationWrapper):
@@ -71,7 +121,6 @@ class FlattenStateWrapper(gym.ObservationWrapper):
     """
     def __init__(self, env):
         super().__init__(env)
-        # Calculate flat dimension based on observation space
         self.flat_dim = self._count_dim(env.observation_space)
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, 
@@ -95,21 +144,18 @@ class FlattenStateWrapper(gym.ObservationWrapper):
         tensors = []
         if isinstance(obs, dict):
             for k in sorted(obs.keys()):
-                v = obs[k]
-                tensors.append(self._flatten_recursive(v))
+                tensors.append(self._flatten_recursive(obs[k]))
         else:
-            # Assume tensor
             if obs.ndim > 2:
-                 v = obs.flatten(start_dim=1)
+                v = obs.flatten(start_dim=1)
             else:
-                 v = obs
+                v = obs
             tensors.append(v)
         return torch.cat(tensors, dim=-1)
 
 
 def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: str = None):
     """Create Track1 environment with proper wrappers."""
-    # Build reward config from Hydra config
     reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     
     env_kwargs = dict(
@@ -132,7 +178,7 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         **env_kwargs
     )
     
-    # Video Recording (only for eval envs with RGB mode or render_mode)
+    # Video Recording
     if for_eval and video_dir and cfg.capture_video:
         env = RecordEpisode(
             env,
@@ -142,15 +188,13 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
             video_fps=30
         )
 
-    # Flatten observations logic
+    # Flatten observations
     if cfg.env.obs_mode == "state":
-        # For state mode, we use our custom FlattenStateWrapper
         env = FlattenStateWrapper(env)
     else:
-        # For RGB mode, use ManiSkill's wrapper
         env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=cfg.env.include_state)
     
-    # Wrap with ManiSkillVectorEnv (provides auto-reset, GPU metrics)
+    # Wrap with ManiSkillVectorEnv
     env = ManiSkillVectorEnv(env, num_envs, ignore_terminations=True, record_metrics=True)
     
     return env
