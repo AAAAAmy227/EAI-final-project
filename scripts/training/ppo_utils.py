@@ -13,8 +13,15 @@ def optimized_gae(
     gae_lambda: float
 ):
     """
-    Standard GAE calculation with post-step dones.
-    GAE = r_t + gamma * V_{t+1} * (1-d_t) - V_t + gamma * lambda * (1-d_t) * GAE_{t+1}
+    CleanRL-style GAE calculation with PRE-step dones.
+    
+    Important: dones[t] stores the done signal BEFORE step t (i.e., from the previous transition).
+    To get the done signal for the transition t -> t+1, we use dones[t+1].
+    For the last step (t = num_steps - 1), we use next_done.
+    
+    This matches CleanRL's ppo_continuous_action.py exactly:
+    - dones[step] is stored BEFORE the action is taken
+    - GAE uses dones[t+1] to determine if the transition from t to t+1 ends
     """
     num_steps: int = rewards.shape[0]
     next_value = next_value.reshape(-1)
@@ -22,31 +29,19 @@ def optimized_gae(
     advantages = torch.zeros_like(rewards)
     lastgaelam = torch.zeros_like(rewards[0])
     
-    # nextvalues starts at V(s_{T+1})
-    nextvalues = next_value
-    # next_non_terminal is (1 - d_T)
-    next_non_terminal = 1.0 - next_done.float()
-    
-    # Loop backwards from T-1 to 0
     for t in range(num_steps - 1, -1, -1):
-        # Advantages are calculated based on the return/value at step t
-        # delta_t = r_t + gamma * V(s_{t+1}) * (1 - d_t) - V(s_t)
-        # However, our loop usually uses 'nextvalues' which is V(s_{t+1})
-        # And 'next_non_terminal' which is (1 - d_t)
+        if t == num_steps - 1:
+            # For the last step, use next_done and next_value
+            nextnonterminal = 1.0 - next_done.float()
+            nextvalues = next_value
+        else:
+            # For other steps, use dones[t+1] and vals[t+1]
+            nextnonterminal = 1.0 - dones[t + 1].float()
+            nextvalues = vals[t + 1]
         
-        # In our storage, dones[t] is the done signal after step t.
-        # So it applies to the transition from t to t+1.
-        non_terminal = 1.0 - dones[t].float()
-        
-        delta = rewards[t] + gamma * nextvalues * non_terminal - vals[t]
-        lastgaelam = delta + gamma * gae_lambda * non_terminal * lastgaelam
+        delta = rewards[t] + gamma * nextvalues * nextnonterminal - vals[t]
+        lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
         advantages[t] = lastgaelam
-        
-        # Set next values for step t-1
-        nextvalues = vals[t]
-        # Although not strictly used in standard PPO loop for delta calculation inside the loop,
-        # we can keep track of it if needed.
-        # non_terminal = 1.0 - dones[t].float()
         
     return advantages, advantages + vals
 

@@ -183,11 +183,19 @@ class PPORunner:
         }, batch_size=[self.num_steps, self.num_envs], device=self.device)
 
         for step in range(self.num_steps):
+            # 2. In-place write (CleanRL style: store BEFORE step)
+            storage[step]["obs"] = obs
+            storage[step]["dones"] = done  # Store PRE-step done (matches CleanRL)
+            
             # Inference
             action, logprob, _, value = self.policy(obs=obs)
+            storage[step]["vals"] = value.flatten()
+            storage[step]["actions"] = action
+            storage[step]["logprobs"] = logprob
             
             # Environment Step
             next_obs, reward, next_done, infos = self._step_env(action)
+            storage[step]["rewards"] = reward
             next_obs_flat = self._flatten_obs(next_obs)
             
             # Log episode info
@@ -202,14 +210,6 @@ class PPORunner:
                     else:
                         r = 0.0
                     self.avg_returns.append(r)
-            
-            # 2. In-place write
-            storage[step]["obs"] = obs
-            storage[step]["dones"] = next_done # Store post-step done (d_t)
-            storage[step]["vals"] = value.flatten()
-            storage[step]["actions"] = action
-            storage[step]["logprobs"] = logprob
-            storage[step]["rewards"] = reward
             
             obs = next_obs_flat
             done = next_done
