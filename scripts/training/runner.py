@@ -198,7 +198,7 @@ class PPORunner:
             storage[step]["rewards"] = reward
             next_obs_flat = self._flatten_obs(next_obs)
             
-            # Log episode info
+            # Log episode info (CleanRL style: log each episode immediately)
             if "final_info" in infos:
                 done_mask = infos["_final_info"]
                 for idx in torch.where(done_mask)[0]:
@@ -209,7 +209,23 @@ class PPORunner:
                         r = float(ep_info["return"][idx])
                     else:
                         r = 0.0
+                    
+                    # Get episode length
+                    if "l" in ep_info:
+                        ep_len = int(ep_info["l"][idx])
+                    elif "length" in ep_info:
+                        ep_len = int(ep_info["length"][idx])
+                    else:
+                        ep_len = 0
+                    
                     self.avg_returns.append(r)
+                    
+                    # CleanRL-style immediate logging per episode
+                    if self.cfg.wandb.enabled:
+                        wandb.log({
+                            "charts/episodic_return": r,
+                            "charts/episodic_length": ep_len,
+                        }, step=self.global_step)
             
             obs = next_obs_flat
             done = next_done
@@ -271,12 +287,14 @@ class PPORunner:
             # Flatten for PPO Update
             container_flat = container.view(-1)
             
-            # PPO Update
+            # PPO Update (with clipfrac accumulation like CleanRL)
+            clipfracs = []
             for epoch in range(self.cfg.ppo.update_epochs):
                 b_inds = torch.randperm(container_flat.shape[0], device=self.device).split(self.minibatch_size)
                 for b in b_inds:
                     container_local = container_flat[b]
                     out = self.update_fn(container_local, tensordict_out=tensordict.TensorDict())
+                    clipfracs.append(out["clipfrac"].item())
                     
                     if self.cfg.ppo.target_kl is not None and out["approx_kl"] > self.cfg.ppo.target_kl:
                         break
@@ -314,7 +332,7 @@ class PPORunner:
                     "losses/entropy": out["entropy_loss"].item(),
                     "losses/approx_kl": out["approx_kl"].item(),
                     "losses/old_approx_kl": out["old_approx_kl"].item(),
-                    "losses/clipfrac": out["clipfrac"].item(),
+                    "losses/clipfrac": np.mean(clipfracs),  # Average over all minibatches (CleanRL style)
                     "losses/explained_variance": explained_var,
                     "losses/grad_norm": out["gn"].item() if isinstance(out["gn"], torch.Tensor) else out["gn"],
                     "rollout/ep_return_mean": avg_return,
