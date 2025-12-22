@@ -9,6 +9,7 @@ import math
 import random
 import time
 from collections import deque
+from functools import partial
 from pathlib import Path
 
 import gymnasium as gym
@@ -26,43 +27,7 @@ from tensordict.nn import CudaGraphModule
 
 from scripts.training.agent import Agent
 from scripts.training.common import make_env
-
-# JIT-compiled GAE function for maximum performance and compiler friendliness
-@torch.jit.script
-def optimized_gae(
-    rewards: torch.Tensor,
-    vals: torch.Tensor,
-    dones: torch.Tensor,
-    next_value: torch.Tensor,
-    next_done: torch.Tensor,
-    gamma: float,
-    gae_lambda: float
-):
-    num_steps: int = rewards.shape[0]
-    next_value = next_value.reshape(-1)
-    
-    # Pre-allocate advantages tensor
-    advantages = torch.zeros_like(rewards)
-    lastgaelam = torch.zeros_like(rewards[0])
-    
-    # In JIT script, we need to be careful with types
-    # ~dones is not supported directly in all versions, use 1.0 - x.float()
-    nextnonterminal = 1.0 - next_done.float()
-    
-    # Loop backwards
-    for t in range(num_steps - 1, -1, -1):
-        if t == num_steps - 1:
-            nextnonterminal_t = nextnonterminal
-            nextvalues_t = next_value
-        else:
-            nextnonterminal_t = 1.0 - dones[t + 1].float()
-            nextvalues_t = vals[t + 1]
-            
-        delta = rewards[t] + gamma * nextvalues_t * nextnonterminal_t - vals[t]
-        lastgaelam = delta + gamma * gae_lambda * nextnonterminal_t * lastgaelam
-        advantages[t] = lastgaelam
-        
-    return advantages, advantages + vals
+from scripts.training.ppo_utils import optimized_gae
 
 class PPORunner:
     def __init__(self, cfg):
@@ -96,8 +61,23 @@ class PPORunner:
         # Determine observation/action dimensions
         obs_space = self.envs.single_observation_space
         act_space = self.envs.single_action_space
-        self.n_obs = math.prod(obs_space.shape)
-        self.n_act = math.prod(act_space.shape)
+        print(f"Observation space: {obs_space}")
+        print(f"Action space: {act_space}")
+        
+        # Handle different observation modes (Dict vs Box)
+        if hasattr(obs_space, "shape") and obs_space.shape is not None:
+            self.n_obs = math.prod(obs_space.shape)
+        elif isinstance(obs_space, gym.spaces.Dict):
+            self.n_obs = sum(math.prod(s.shape) for s in obs_space.values())
+        else:
+            self.n_obs = sum(math.prod(s.shape) for s in obs_space.spaces.values()) if hasattr(obs_space, "spaces") else 0
+            
+        if hasattr(act_space, "shape") and act_space.shape is not None:
+            self.n_act = math.prod(act_space.shape)
+        else:
+            self.n_act = sum(math.prod(s.shape) for s in act_space.spaces.values()) if hasattr(act_space, "spaces") else 0
+        
+        print(f"n_obs: {self.n_obs}, n_act: {self.n_act}")
         
         # Agent setup
         self.agent = Agent(self.n_obs, self.n_act, device=self.device)
@@ -106,11 +86,12 @@ class PPORunner:
         agent_inference_p = from_module(self.agent).data
         agent_inference_p.to_module(self.agent_inference)
         
-        # Optimizer with capturable for cudagraphs
+        # Optimizer with fused and capturable for maximum performance
         self.optimizer = optim.Adam(
             self.agent.parameters(),
             lr=torch.tensor(cfg.ppo.learning_rate, device=self.device),
             eps=1e-5,
+            fused=True,
             capturable=self.cudagraphs and not self.compile,
         )
         
@@ -131,41 +112,24 @@ class PPORunner:
         self.staged_reward = self.reward_mode == "staged_dense"
 
     def _setup_compiled_functions(self):
-        """Setup torch.compile and CudaGraphModule for policy/gae/update."""
+        """Setup torch.compile and CudaGraphModule."""
         cfg = self.cfg
         
-        # Define policy function
+        # 1. Policy (Inference): Suitable for CudaGraphModule
         self.policy = self.agent_inference.get_action_and_value
         self.get_value = self.agent_inference.get_value
         
-        # GAE function adapter
-        # This wrapper prepares data for the JIT-compiled optimized_gae function
-        gamma = cfg.ppo.gamma
-        gae_lambda = cfg.ppo.gae_lambda
-        
-        def gae_adapter(next_obs, next_done, container):
-            next_value = self.get_value(next_obs)
-            
-            # Call JIT compiled function
-            advantages, returns = optimized_gae(
-                container["rewards"],
-                container["vals"],
-                container["dones"],
-                next_value,
-                next_done,
-                gamma,
-                gae_lambda
-            )
-            
-            container["advantages"] = advantages
-            container["returns"] = returns
-            return container
-        
-        self.gae_fn = gae_adapter
-        
-        # Update function
+        # 2. GAE: Use functools.partial to bind gamma/gae_lambda
+        self.gae_fn = partial(
+            optimized_gae,
+            gamma=cfg.ppo.gamma,
+            gae_lambda=cfg.ppo.gae_lambda
+        )
+
+        # 3. Update (Training): Use torch.compile(mode="reduce-overhead")
+        # DO NOT use CudaGraphModule here to avoid losing CPU-side logic.
         def update(obs, actions, logprobs, advantages, returns, vals):
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             _, newlogprob, entropy, newvalue = self.agent.get_action_and_value(obs, actions)
             logratio = newlogprob - logprobs
             ratio = logratio.exp()
@@ -197,7 +161,7 @@ class PPORunner:
             gn = nn.utils.clip_grad_norm_(self.agent.parameters(), cfg.ppo.max_grad_norm)
             self.optimizer.step()
             
-            return approx_kl, v_loss.detach(), pg_loss.detach(), entropy_loss.detach(), old_approx_kl, clipfrac, gn
+            return approx_kl, v_loss, pg_loss, entropy_loss, old_approx_kl, clipfrac, gn
         
         self.update_fn = tensordict.nn.TensorDictModule(
             update,
@@ -205,21 +169,30 @@ class PPORunner:
             out_keys=["approx_kl", "v_loss", "pg_loss", "entropy_loss", "old_approx_kl", "clipfrac", "gn"],
         )
         
-        # Apply torch.compile
         if self.compile:
-            self.policy = torch.compile(self.policy)
-            # Skip compiling GAE when cudagraphs is enabled:
-            # torch.compile's lazy tracing conflicts with CudaGraphModule capture
-            # (triggers RuntimeError: Cannot call CUDAGeneratorImpl::current_seed during CUDA graph capture)
-            if not self.cudagraphs:
-                self.gae_fn = torch.compile(self.gae_fn, fullgraph=True)
-            self.update_fn = torch.compile(self.update_fn)
+            print("Compiling functions...")
+            if self.cudagraphs:
+                # When using CudaGraphModule, use default compile mode (not reduce-overhead)
+                # reduce-overhead internally uses CUDA graphs which conflicts with CudaGraphModule
+                self.policy = torch.compile(self.policy)
+            else:
+                # When not using CudaGraphModule, reduce-overhead is safe
+                self.policy = torch.compile(self.policy, mode="reduce-overhead")
+            # Update: Always use reduce-overhead (no CudaGraphModule on update)
+            self.update_fn = torch.compile(self.update_fn, mode="reduce-overhead")
         
-        # Apply CudaGraphModule on top of compiled functions
         if self.cudagraphs:
+            print("Applying CudaGraphModule to Policy (Inference Only)...")
             self.policy = CudaGraphModule(self.policy)
-            self.gae_fn = CudaGraphModule(self.gae_fn)
-            self.update_fn = CudaGraphModule(self.update_fn)
+
+    def _flatten_obs(self, obs):
+        """Flatten dictionary observations into a single tensor."""
+        if isinstance(obs, torch.Tensor):
+            return obs
+        if isinstance(obs, dict):
+            # Sort keys to ensure consistent order
+            return torch.cat([self._flatten_obs(obs[k]) for k in sorted(obs.keys())], dim=-1)
+        return torch.as_tensor(obs, device=self.device)
 
     def _step_env(self, action):
         """Execute environment step."""
@@ -228,43 +201,53 @@ class PPORunner:
         return next_obs, reward, next_done, info
 
     def _rollout(self, obs, done):
-        """Collect trajectories."""
-        ts = []
+        """Collect trajectories with pre-allocated storage."""
+        # 1. Pre-allocate TensorDict (Zero-copy optimization)
+        storage = tensordict.TensorDict({
+            "obs": torch.zeros((self.num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
+            "dones": torch.zeros((self.num_steps, self.num_envs), device=self.device, dtype=torch.bool),
+            "vals": torch.zeros((self.num_steps, self.num_envs), device=self.device),
+            "actions": torch.zeros((self.num_steps, self.num_envs, self.n_act), device=self.device),
+            "logprobs": torch.zeros((self.num_steps, self.num_envs), device=self.device),
+            "rewards": torch.zeros((self.num_steps, self.num_envs), device=self.device),
+        }, batch_size=[self.num_steps, self.num_envs], device=self.device)
+
         for step in range(self.num_steps):
+            # Inference
             action, logprob, _, value = self.policy(obs=obs)
             
+            # Environment Step
             next_obs, reward, next_done, infos = self._step_env(action)
+            next_obs_flat = self._flatten_obs(next_obs)
             
             # Log episode info
             if "final_info" in infos:
                 done_mask = infos["_final_info"]
                 for idx in torch.where(done_mask)[0]:
                     ep_info = infos["final_info"]["episode"]
-                    # ManiSkill uses 'r' for return, handle both formats
                     if "r" in ep_info:
                         r = float(ep_info["r"][idx])
                     elif "return" in ep_info:
                         r = float(ep_info["return"][idx])
                     else:
-                        # Fallback: compute from elapsed steps if needed
                         r = 0.0
                     self.avg_returns.append(r)
             
-            ts.append(tensordict.TensorDict._new_unsafe(
-                obs=obs,
-                dones=done,
-                vals=value.flatten(),
-                actions=action,
-                logprobs=logprob,
-                rewards=reward * self.cfg.ppo.reward_scale,
-                batch_size=(self.num_envs,),
-            ))
+            # 2. In-place write
+            storage[step]["obs"] = obs
+            storage[step]["dones"] = next_done # Store post-step done (d_t)
+            storage[step]["vals"] = value.flatten()
+            storage[step]["actions"] = action
+            storage[step]["logprobs"] = logprob
+            storage[step]["rewards"] = reward
             
-            obs = next_obs.to(self.device, non_blocking=True)
-            done = next_done.to(self.device, non_blocking=True)
+            obs = next_obs_flat
+            done = next_done
         
-        container = torch.stack(ts, 0).to(self.device)
-        return obs, done, container
+        # Apply reward scale at the end of rollout (or before GAE)
+        storage["rewards"] *= self.cfg.ppo.reward_scale
+        
+        return obs, done, storage
 
     def train(self):
         print(f"\n{'='*60}")
@@ -275,7 +258,7 @@ class PPORunner:
         
         # Initial reset
         next_obs, _ = self.envs.reset(seed=self.cfg.seed)
-        next_obs = next_obs.to(self.device)
+        next_obs = self._flatten_obs(next_obs).to(self.device)
         next_done = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
@@ -301,8 +284,21 @@ class PPORunner:
             next_obs, next_done, container = self._rollout(next_obs, next_done)
             self.global_step += container.numel()
             
-            # GAE
-            container = self.gae_fn(next_obs, next_done, container)
+            # GAE Calculation
+            with torch.no_grad():
+                next_value = self.get_value(next_obs)
+            
+            advs, rets = self.gae_fn(
+                container["rewards"],
+                container["vals"],
+                container["dones"],
+                next_value,
+                next_done
+            )
+            container["advantages"] = advs
+            container["returns"] = rets
+            
+            # Flatten for PPO Update
             container_flat = container.view(-1)
             
             # PPO Update

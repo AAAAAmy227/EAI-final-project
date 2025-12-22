@@ -67,12 +67,10 @@ def main(cfg: DictConfig):
         print("Training interrupted by user.")
         runner.envs.close()
         runner.eval_envs.close()
+    finally:
         if cfg.wandb.enabled:
-            wandb.finish()
-            
-    # Cleanup
-    if cfg.wandb.enabled:
-        wandb.finish()
+            wandb.finish()            
+
 
 if __name__ == "__main__":
     main()
