@@ -43,6 +43,7 @@ ppo:
   max_grad_norm: 0.5
   target_kl: 0.2
   reward_scale: 1.0
+  handle_timeout_termination: true  # If true, bootstrap on truncation (recommended)
 
 # Model saving
 save_model: true

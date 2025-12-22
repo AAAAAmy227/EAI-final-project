@@ -112,6 +112,13 @@ class PPORunner:
         self.global_step = 0
         self.avg_returns = deque(maxlen=20)
         
+        # Termination tracking for logging
+        self.terminated_count = 0
+        self.truncated_count = 0
+        
+        # Handle timeout termination (if True, truncated episodes bootstrap)
+        self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
+        
         # Reward mode for logging
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
         self.staged_reward = self.reward_mode == "staged_dense"
@@ -165,17 +172,28 @@ class PPORunner:
         return torch.as_tensor(obs, device=self.device)
 
     def _step_env(self, action):
-        """Execute environment step."""
+        """Execute environment step.
+        
+        Returns:
+            next_obs, reward, terminated, truncated, done, info
+            where done = terminated | truncated (for episode boundary tracking)
+        """
         next_obs, reward, terminations, truncations, info = self.envs.step(action)
-        next_done = terminations | truncations
-        return next_obs, reward, next_done, info
+        done = terminations | truncations
+        return next_obs, reward, terminations, truncations, done, info
 
-    def _rollout(self, obs, done):
-        """Collect trajectories with pre-allocated storage."""
+    def _rollout(self, obs, bootstrap_mask):
+        """Collect trajectories with pre-allocated storage.
+        
+        Args:
+            obs: Current observations
+            bootstrap_mask: Mask for GAE bootstrap. If handle_timeout_termination=True,
+                           this is `terminated`. If False, this is `done` (terminated|truncated).
+        """
         # 1. Pre-allocate TensorDict (Zero-copy optimization)
         storage = tensordict.TensorDict({
             "obs": torch.zeros((self.num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
-            "dones": torch.zeros((self.num_steps, self.num_envs), device=self.device, dtype=torch.bool),
+            "bootstrap_mask": torch.zeros((self.num_steps, self.num_envs), device=self.device, dtype=torch.bool),
             "vals": torch.zeros((self.num_steps, self.num_envs), device=self.device),
             "actions": torch.zeros((self.num_steps, self.num_envs, self.n_act), device=self.device),
             "logprobs": torch.zeros((self.num_steps, self.num_envs), device=self.device),
@@ -185,7 +203,7 @@ class PPORunner:
         for step in range(self.num_steps):
             # 2. In-place write (CleanRL style: store BEFORE step)
             storage[step]["obs"] = obs
-            storage[step]["dones"] = done  # Store PRE-step done (matches CleanRL)
+            storage[step]["bootstrap_mask"] = bootstrap_mask  # Store PRE-step mask for GAE
             
             # Inference
             action, logprob, _, value = self.policy(obs=obs)
@@ -194,7 +212,7 @@ class PPORunner:
             storage[step]["logprobs"] = logprob
             
             # Environment Step
-            next_obs, reward, next_done, infos = self._step_env(action)
+            next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
             storage[step]["rewards"] = reward
             next_obs_flat = self._flatten_obs(next_obs)
             
@@ -218,6 +236,12 @@ class PPORunner:
                     else:
                         ep_len = 0
                     
+                    # Track termination reason
+                    if next_terminated[idx]:
+                        self.terminated_count += 1
+                    elif next_truncated[idx]:
+                        self.truncated_count += 1
+                    
                     self.avg_returns.append(r)
                     
                     # CleanRL-style immediate logging per episode
@@ -228,12 +252,16 @@ class PPORunner:
                         }, step=self.global_step)
             
             obs = next_obs_flat
-            done = next_done
+            # Choose bootstrap mask based on config
+            if self.handle_timeout_termination:
+                bootstrap_mask = next_terminated  # Only true terminations stop bootstrap
+            else:
+                bootstrap_mask = next_done  # CleanRL default: both stop bootstrap
         
         # Apply reward scale at the end of rollout (or before GAE)
         storage["rewards"] *= self.cfg.ppo.reward_scale
         
-        return obs, done, storage
+        return obs, bootstrap_mask, storage
 
     def train(self):
         print(f"\n{'='*60}")
@@ -245,7 +273,7 @@ class PPORunner:
         # Initial reset
         next_obs, _ = self.envs.reset(seed=self.cfg.seed)
         next_obs = self._flatten_obs(next_obs).to(self.device)
-        next_done = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        next_bootstrap_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
         global_step_burnin = None
@@ -267,19 +295,22 @@ class PPORunner:
             torch.compiler.cudagraph_mark_step_begin()
             
             # Rollout
-            next_obs, next_done, container = self._rollout(next_obs, next_done)
+            next_obs, next_bootstrap_mask, container = self._rollout(next_obs, next_bootstrap_mask)
             self.global_step += container.numel()
             
             # GAE Calculation
+            # bootstrap_mask controls when to stop bootstrapping:
+            # - handle_timeout_termination=True: only terminated stops bootstrap (truncated continues)
+            # - handle_timeout_termination=False: both stop bootstrap (CleanRL default)
             with torch.no_grad():
                 next_value = self.get_value(next_obs)
             
             advs, rets = self.gae_fn(
                 container["rewards"],
                 container["vals"],
-                container["dones"],
+                container["bootstrap_mask"],
                 next_value,
-                next_done
+                next_bootstrap_mask
             )
             container["advantages"] = advs
             container["returns"] = rets
@@ -327,6 +358,8 @@ class PPORunner:
                 logs = {
                     "charts/SPS": speed,
                     "charts/learning_rate": lr,
+                    "charts/terminated_count": self.terminated_count,
+                    "charts/truncated_count": self.truncated_count,
                     "losses/value_loss": out["v_loss"].item(),
                     "losses/policy_loss": out["pg_loss"].item(),
                     "losses/entropy": out["entropy_loss"].item(),

@@ -6,22 +6,29 @@ from tensordict.nn import TensorDictModule
 def optimized_gae(
     rewards: torch.Tensor,
     vals: torch.Tensor,
-    dones: torch.Tensor,
+    terminated: torch.Tensor,
     next_value: torch.Tensor,
-    next_done: torch.Tensor,
+    next_terminated: torch.Tensor,
     gamma: float,
     gae_lambda: float
 ):
     """
-    CleanRL-style GAE calculation with PRE-step dones.
+    GAE calculation with proper terminated vs truncated handling.
     
-    Important: dones[t] stores the done signal BEFORE step t (i.e., from the previous transition).
-    To get the done signal for the transition t -> t+1, we use dones[t+1].
-    For the last step (t = num_steps - 1), we use next_done.
+    Only uses `terminated` (not `done = terminated | truncated`) for bootstrap mask.
+    This means truncated episodes still bootstrap V(s_{t+1}), which is theoretically correct.
     
-    This matches CleanRL's ppo_continuous_action.py exactly:
-    - dones[step] is stored BEFORE the action is taken
-    - GAE uses dones[t+1] to determine if the transition from t to t+1 ends
+    Args:
+        rewards: [num_steps, num_envs] reward tensor
+        vals: [num_steps, num_envs] value estimates
+        terminated: [num_steps, num_envs] PRE-step terminated flags (not including truncation)
+        next_value: [1, num_envs] or [num_envs] value estimate for final state
+        next_terminated: [num_envs] whether final state is terminated
+        gamma: discount factor
+        gae_lambda: GAE lambda
+    
+    Returns:
+        advantages, returns
     """
     num_steps: int = rewards.shape[0]
     next_value = next_value.reshape(-1)
@@ -31,12 +38,12 @@ def optimized_gae(
     
     for t in range(num_steps - 1, -1, -1):
         if t == num_steps - 1:
-            # For the last step, use next_done and next_value
-            nextnonterminal = 1.0 - next_done.float()
+            # For the last step, use next_terminated and next_value
+            nextnonterminal = 1.0 - next_terminated.float()
             nextvalues = next_value
         else:
-            # For other steps, use dones[t+1] and vals[t+1]
-            nextnonterminal = 1.0 - dones[t + 1].float()
+            # For other steps, use terminated[t+1] and vals[t+1]
+            nextnonterminal = 1.0 - terminated[t + 1].float()
             nextvalues = vals[t + 1]
         
         delta = rewards[t] + gamma * nextvalues * nextnonterminal - vals[t]
