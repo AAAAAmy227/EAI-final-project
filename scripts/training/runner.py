@@ -81,10 +81,14 @@ class PPORunner:
         
         # Agent setup
         self.agent = Agent(self.n_obs, self.n_act, device=self.device)
-        # Create inference agent with detached params
-        self.agent_inference = Agent(self.n_obs, self.n_act, device=self.device)
-        agent_inference_p = from_module(self.agent).data
-        agent_inference_p.to_module(self.agent_inference)
+        
+        # Create inference agent only when using CudaGraphModule
+        # (CudaGraph captures weights, so we need a separate copy for inference)
+        if self.cudagraphs:
+            self.agent_inference = Agent(self.n_obs, self.n_act, device=self.device)
+            from_module(self.agent).data.to_module(self.agent_inference)
+        else:
+            self.agent_inference = None  # Not needed without CudaGraph
         
         # Optimizer with fused and capturable for maximum performance
         self.optimizer = optim.Adam(
@@ -98,7 +102,8 @@ class PPORunner:
         if cfg.checkpoint:
             print(f"Loading checkpoint from {cfg.checkpoint}")
             self.agent.load_state_dict(torch.load(cfg.checkpoint))
-            from_module(self.agent).data.to_module(self.agent_inference)
+            if self.cudagraphs:
+                from_module(self.agent).data.to_module(self.agent_inference)
         
         # Setup compiled functions
         self._setup_compiled_functions()
@@ -115,9 +120,12 @@ class PPORunner:
         """Setup torch.compile and CudaGraphModule."""
         cfg = self.cfg
         
-        # 1. Policy (Inference): Suitable for CudaGraphModule
-        self.policy = self.agent_inference.get_action_and_value
-        self.get_value = self.agent_inference.get_value
+        # 1. Policy (Inference)
+        # Use agent_inference for CudaGraph (needs separate copy for weight sync)
+        # Use agent directly for torch.compile (dynamic, no capture)
+        inference_agent = self.agent_inference if self.cudagraphs else self.agent
+        self.policy = inference_agent.get_action_and_value
+        self.get_value = inference_agent.get_value
         
         # 2. GAE: Use functools.partial to bind gamma/gae_lambda
         self.gae_fn = partial(
@@ -276,8 +284,9 @@ class PPORunner:
                     continue
                 break
             
-            # Sync params to inference agent
-            from_module(self.agent).data.to_module(self.agent_inference)
+            # Sync params to inference agent (only needed for CudaGraph)
+            if self.cudagraphs:
+                from_module(self.agent).data.to_module(self.agent_inference)
             
             # Logging (every iteration after burnin)
             if global_step_burnin is not None:

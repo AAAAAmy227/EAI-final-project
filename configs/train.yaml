@@ -16,7 +16,7 @@ wandb:
 
 # Optimization flags
 compile: true
-cudagraphs: true
+cudagraphs: false
 anneal_lr: true
 
 # Training hyperparameters
