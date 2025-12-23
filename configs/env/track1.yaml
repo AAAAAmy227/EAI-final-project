@@ -6,6 +6,17 @@ camera_mode: "direct_pinhole"
 obs_mode: "rgb"
 include_state: true
 
-# Max episode steps based on trajectory analysis (with 20% buffer)
-# lift: max 296 -> 355, sort: max 619 -> 743, stack: max 384 -> 461
-max_episode_steps: 355  # Default for lift task
+# Simulation frequency (must match real robot for sim2real)
+# Real robot data is 30 FPS
+sim_freq: 120       # Physics simulation frequency (Hz)
+control_freq: 30    # Control frequency (Hz) - MUST match real data (30 Hz)
+
+# Max episode steps based on trajectory analysis
+# Formula: base_steps * multiplier
+# lift: 296 steps, stack: 384 steps, sort: 619 steps (at 30 Hz)
+episode_steps:
+  base: 296         # Base from trajectory analysis (lift max)
+  multiplier: 1.2   # 20% buffer for RL exploration
+  # Effective max_episode_steps = 296 * 1.2 = 355 (for lift)
+  # Override for stack: base=384, for sort: base=619
+

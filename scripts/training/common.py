@@ -163,6 +163,16 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     if "control" in cfg and "action_bounds" in cfg.control:
         action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True)
     
+    # Get simulation frequencies (must match real robot for sim2real)
+    sim_freq = cfg.env.get("sim_freq", 120)      # Physics simulation frequency
+    control_freq = cfg.env.get("control_freq", 30)  # Control frequency (real robot is 30 Hz)
+    
+    # Build sim_config dict for ManiSkill
+    sim_config = {
+        "sim_freq": sim_freq,
+        "control_freq": control_freq,
+    }
+    
     env_kwargs = dict(
         task=cfg.env.task,
         control_mode=cfg.env.control_mode,
@@ -171,14 +181,20 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
         reward_config=reward_config,
         action_bounds=action_bounds,
+        sim_config=sim_config,
         render_mode="all",
         sim_backend="physx_cuda",
     )
     
     reconfiguration_freq = 1 if for_eval else None
     
-    # Get max_episode_steps from config (default to registered value if not specified)
-    max_episode_steps = cfg.env.get("max_episode_steps", None)
+    # Compute max_episode_steps from base * multiplier (or use legacy format)
+    if "episode_steps" in cfg.env:
+        base = cfg.env.episode_steps.get("base", 296)
+        multiplier = cfg.env.episode_steps.get("multiplier", 1.2)
+        max_episode_steps = int(base * multiplier)
+    else:
+        max_episode_steps = cfg.env.get("max_episode_steps", None)
     
     env = gym.make(
         cfg.env.env_id,
