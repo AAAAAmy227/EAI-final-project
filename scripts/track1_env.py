@@ -34,10 +34,12 @@ class Track1Env(BaseEnv):
         render_scale: int = 3,
         reward_config: dict = None,  # Reward configuration from Hydra
         action_bounds: dict = None,  # Per-joint action bounds override
+        camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
+        self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
 
         self.render_scale = render_scale
         
@@ -308,8 +310,26 @@ class Track1Env(BaseEnv):
     def _default_sensor_configs(self):
         """Front Camera with optional config file override for manual tuning."""
         
-        
-        pose = sapien_utils.look_at(eye=[0.316, 0.260, 0.407], target=[0.316, 0.260, 0.0], up=[0, -1, 0])
+        # Use extrinsic matrix from config if provided
+        if self.camera_extrinsic is not None:
+            extrinsic = np.array(self.camera_extrinsic)
+            R = extrinsic[:3, :3]  # Rotation matrix (cam2world)
+            eye = extrinsic[:3, 3]  # Camera position
+            
+            # forward = camera Z axis in world (third column of R)
+            forward = R[:, 2]
+            
+            # up = camera -Y axis in world (images have Y pointing down)
+            up = -R[:, 1]
+            
+            # target = eye + forward * distance (use original distance ~0.407)
+            distance = 0.407
+            target = eye + forward * distance
+            
+            pose = sapien_utils.look_at(eye=eye.tolist(), target=target.tolist(), up=up.tolist())
+        else:
+            # Default look_at parameters
+            pose = sapien_utils.look_at(eye=[0.316, 0.260, 0.407], target=[0.316, 0.260, 0.0], up=[0, -1, 0])
         
         if self.domain_randomization and hasattr(self, 'num_envs') and self.num_envs > 1:
             # base_pose = sapien.Pose(p=base_pos, q=q_sapien)

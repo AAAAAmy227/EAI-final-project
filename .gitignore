@@ -7,6 +7,7 @@ converted_docs/
 *.png
 *.jpg
 *.jpeg
+*.npy
 .vscode/
 .idea/
 eai-dataset/
