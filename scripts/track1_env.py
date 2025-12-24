@@ -404,6 +404,43 @@ class Track1Env(BaseEnv):
                 )
                 self._sensors[uid] = Camera(config, self.scene)
 
+    def render_sensors(self):
+        """Override to render only RGB images from sensors (no depth/segmentation).
+        
+        This reduces rendering compute by only requesting RGB texture from the shader,
+        unlike the default which requests all textures (rgb + position + segmentation).
+        """
+        from mani_skill.utils.visualization.misc import tile_images
+        from mani_skill.sensors.camera import Camera
+        
+        # Hide objects that should be hidden for observation
+        for obj in self._hidden_objects:
+            obj.hide_visual()
+        
+        # Update render for sensors only
+        self.scene.update_render(update_sensors=True, update_human_render_cameras=False)
+        self.capture_sensor_data()
+        
+        images = []
+        for name, sensor in self._sensors.items():
+            if isinstance(sensor, Camera):
+                # Request ONLY RGB - this is the key difference that reduces compute
+                obs = sensor.get_obs(
+                    rgb=True,
+                    depth=False,
+                    position=False,
+                    segmentation=False,
+                    apply_texture_transforms=True
+                )
+                if 'rgb' in obs:
+                    images.append(obs['rgb'])
+        
+        if len(images) == 0:
+            # Fallback to default if no RGB found
+            return super().render_sensors()
+        
+        return tile_images(images)
+
     def reset(self, seed=None, options=None):
         obs, info = super().reset(seed=seed, options=options)
         if self.camera_mode != "direct_pinhole":

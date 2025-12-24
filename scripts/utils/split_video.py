@@ -1,0 +1,155 @@
+"""
+Split tiled parallel environment videos into individual videos.
+
+ManiSkill's RecordEpisode wrapper tiles multiple parallel env renders 
+into a single video using a sqrt(num_envs) x sqrt(num_envs) grid.
+
+This script splits them back into individual videos using ffmpeg crop filter.
+
+Usage:
+    python scripts/utils/split_video.py path/to/video.mp4 --num_envs 8
+    python scripts/utils/split_video.py path/to/videos/ --num_envs 8  # batch mode
+"""
+
+import argparse
+import math
+import subprocess
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+
+def get_video_info(video_path: str):
+    """Get video resolution using cv2."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+    
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    
+    return width, height, fps, frames
+
+
+def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx: int = None, rgb_only: bool = False):
+    """
+    Split a tiled video into individual environment videos using ffmpeg.
+    
+    Args:
+        video_path: Path to input video
+        num_envs: Number of parallel environments that were tiled
+        output_dir: Output directory (default: same as input)
+        env_idx: If specified, only extract this specific env (0-indexed)
+        rgb_only: If True, only extract top half of each cell (RGB, ignore depth/segmentation)
+    
+    Returns:
+        List of output video paths
+    """
+    video_path = Path(video_path)
+    if output_dir is None:
+        # Create subfolder for each source video
+        output_dir = video_path.parent / "split" / video_path.stem
+    else:
+        output_dir = Path(output_dir) / video_path.stem
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get video info
+    frame_width, frame_height, fps, total_frames = get_video_info(str(video_path))
+    
+    # Calculate grid dimensions (ManiSkill uses sqrt for nrows)
+    nrows = int(np.sqrt(num_envs))
+    ncols = math.ceil(num_envs / nrows)
+    
+    # Calculate individual cell size
+    cell_w = frame_width // ncols
+    cell_h = frame_height // nrows
+    
+    # If rgb_only, only take top half of each cell (RGB is on top, position/seg on bottom)
+    if rgb_only:
+        cell_h = cell_h // 2
+        print(f"Input video: {video_path.name} (RGB only mode - extracting top half)")
+    else:
+        print(f"Input video: {video_path.name}")
+    
+    print(f"  Resolution: {frame_width}x{frame_height}, {fps} fps, {total_frames} frames")
+    print(f"  Grid: {nrows} rows x {ncols} cols")
+    print(f"  Cell size: {cell_w}x{cell_h}")
+    
+    # Determine which envs to extract
+    if env_idx is not None:
+        env_indices = [env_idx]
+    else:
+        env_indices = list(range(num_envs))
+    
+    output_paths = []
+    
+    for idx in env_indices:
+        row = idx // ncols
+        col = idx % ncols
+        
+        # Calculate crop position (top-left corner)
+        x = col * cell_w
+        # For rgb_only, we still need to calculate y based on full cell height
+        if rgb_only:
+            y = row * (cell_h * 2)  # Full cell height for row offset
+        else:
+            y = row * cell_h
+        
+        output_name = f"env{idx}.mp4"
+        output_path = output_dir / output_name
+        output_paths.append(output_path)
+        
+        # Use ffmpeg crop filter
+        # crop=w:h:x:y
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-vf", f"crop={cell_w}:{cell_h}:{x}:{y}",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-an",  # No audio
+            str(output_path)
+        ]
+        
+        print(f"  Extracting env{idx}...", end=" ", flush=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"FAILED")
+            print(f"  Error: {result.stderr[:200]}")
+        else:
+            print("OK")
+    
+    print(f"Output videos saved to: {output_dir}")
+    return output_paths
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Split tiled parallel env videos")
+    parser.add_argument("input", type=str, help="Input video file or directory")
+    parser.add_argument("--num_envs", type=int, required=True, help="Number of parallel envs")
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
+    parser.add_argument("--env_idx", type=int, default=None, help="Only extract this env index (0-indexed)")
+    parser.add_argument("--rgb_only", action="store_true", help="Only extract RGB (top half of each cell)")
+    
+    args = parser.parse_args()
+    
+    input_path = Path(args.input)
+    
+    if input_path.is_dir():
+        # Batch mode: process all mp4 files
+        video_files = list(input_path.glob("*.mp4"))
+        print(f"Found {len(video_files)} video(s) to process")
+        for video_file in video_files:
+            split_video(str(video_file), args.num_envs, args.output_dir, args.env_idx, args.rgb_only)
+    else:
+        # Single file mode
+        split_video(args.input, args.num_envs, args.output_dir, args.env_idx, args.rgb_only)
+
+
+if __name__ == "__main__":
+    main()

@@ -197,7 +197,7 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         camera_extrinsic=camera_extrinsic,
         undistort_alpha=undistort_alpha,
         sim_config=sim_config,
-        render_mode="all",
+        render_mode="sensors",  # 'sensors' works with RecordEpisode, shows RGB only
         sim_backend="physx_cuda",
     )
     
@@ -227,7 +227,8 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
             output_dir=video_dir,
             save_trajectory=False,
             max_steps_per_video=max_video_steps,
-            video_fps=30
+            video_fps=30,
+            info_on_video=False,  # Disabled: crashes with rgb_array render mode
         )
 
     # Flatten observations

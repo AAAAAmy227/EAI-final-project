@@ -2,12 +2,12 @@
 reward_mode: "dense"
 
 # Reward type: "parallel" (all components at once) or "staged" (curriculum)
-reward_type: "staged"
+reward_type: "parallel"
 
 # Reward weights
 weights:
   reach: 1.0         # Approach cube
-  grasp: 2.0         # Successfully grasp
+  grasp: 0.0         # Successfully grasp
   lift: 50.0         # Lift cube up (height in meters, scaled up)
   success: 10.0      # Task completion bonus
 
