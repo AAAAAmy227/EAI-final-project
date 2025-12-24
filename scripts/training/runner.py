@@ -202,18 +202,19 @@ class PPORunner:
 
         for step in range(self.num_steps):
             # 2. In-place write (CleanRL style: store BEFORE step)
-            storage[step]["obs"] = obs
-            storage[step]["bootstrap_mask"] = bootstrap_mask  # Store PRE-step mask for GAE
+            # IMPORTANT: Use storage['key'][step] NOT storage[step]['key'] for TensorDict
+            storage["obs"][step] = obs
+            storage["bootstrap_mask"][step] = bootstrap_mask  # Store PRE-step mask for GAE
             
             # Inference
             action, logprob, _, value = self.policy(obs=obs)
-            storage[step]["vals"] = value.flatten()
-            storage[step]["actions"] = action
-            storage[step]["logprobs"] = logprob
+            storage["vals"][step] = value.flatten()
+            storage["actions"][step] = action
+            storage["logprobs"][step] = logprob
             
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
-            storage[step]["rewards"] = reward
+            storage["rewards"][step] = reward
             next_obs_flat = self._flatten_obs(next_obs)
             
             # Log episode info (CleanRL style: log each episode immediately)
@@ -221,18 +222,19 @@ class PPORunner:
                 done_mask = infos["_final_info"]
                 for idx in torch.where(done_mask)[0]:
                     ep_info = infos["final_info"]["episode"]
-                    if "r" in ep_info:
-                        r = float(ep_info["r"][idx])
-                    elif "return" in ep_info:
+                    # ManiSkill uses 'return' and 'episode_len', not 'r' and 'l'
+                    if "return" in ep_info:
                         r = float(ep_info["return"][idx])
+                    elif "r" in ep_info:
+                        r = float(ep_info["r"][idx])
                     else:
                         r = 0.0
                     
                     # Get episode length
-                    if "l" in ep_info:
+                    if "episode_len" in ep_info:
+                        ep_len = int(ep_info["episode_len"][idx])
+                    elif "l" in ep_info:
                         ep_len = int(ep_info["l"][idx])
-                    elif "length" in ep_info:
-                        ep_len = int(ep_info["length"][idx])
                     else:
                         ep_len = 0
                     
