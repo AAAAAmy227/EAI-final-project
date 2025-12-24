@@ -86,22 +86,36 @@ class Track1Env(BaseEnv):
         # Reward type: "parallel" or "staged"
         self.reward_type = reward_config.get("reward_type", "staged")
         
-        # Weights
+        # Weights (new naming scheme with backward compatibility)
         weights = reward_config.get("weights", {})
         self.reward_weights = {
-            "reach": weights.get("reach", 1.0),
-            "grasp": weights.get("grasp", 2.0),
+            # New style
+            "approach": weights.get("approach", weights.get("reach", 1.0)),
+            "horizontal_penalty": weights.get("horizontal_penalty", 0.0),
             "lift": weights.get("lift", 5.0),
             "success": weights.get("success", 10.0),
+            # Legacy (for backward compatibility)
+            "reach": weights.get("reach", weights.get("approach", 1.0)),
+            "grasp": weights.get("grasp", 0.0),
         }
         
-        # Scaling
-        self.reach_scale = reward_config.get("reach_scale", 5.0)
+        # Approach reward curve (piecewise linear)
+        self.approach_threshold = reward_config.get("approach_threshold", 0.01)  # Full reward within this distance (1cm)
+        self.approach_zero_point = reward_config.get("approach_zero_point", 0.20)  # Zero reward at this distance (20cm)
+        
+        # Legacy scaling (kept for backward compatibility, not used with piecewise)
+        self.approach_scale = reward_config.get("approach_scale", reward_config.get("reach_scale", 5.0))
+        self.reach_scale = self.approach_scale
+        
+        # Gripper reference point offsets
+        self.gripper_tip_offset = reward_config.get("gripper_tip_offset", 0.015)  # Along jaw, back from tip (1.5cm)
+        self.gripper_outward_offset = reward_config.get("gripper_outward_offset", 0.015)  # Perpendicular, outward for cube thickness (1.5cm)
         
         # Stage thresholds
         stages = reward_config.get("stages", {})
         self.stage_thresholds = {
-            "reach": stages.get("reach_threshold", 0.05),
+            "approach": stages.get("approach_threshold", stages.get("reach_threshold", 0.05)),
+            "reach": stages.get("reach_threshold", stages.get("approach_threshold", 0.05)),
             "grasp": stages.get("grasp_threshold", 0.03),
             "lift": stages.get("lift_target", 0.05),
         }
@@ -952,6 +966,11 @@ class Track1Env(BaseEnv):
                 red_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
                 self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
                 
+                # Store initial cube XY for horizontal penalty in reward
+                if not hasattr(self, 'initial_cube_xy'):
+                    self.initial_cube_xy = torch.zeros(self.num_envs, 2, device=self.device)
+                self.initial_cube_xy[env_idx] = red_pos[:, :2]
+                
             elif self.task == "stack":
                 # Both cubes in Right Grid, non-overlapping
                 # Minimum distance: 3cm * sqrt(2) ≈ 4.3cm (diagonal of cube)
@@ -1113,80 +1132,92 @@ class Track1Env(BaseEnv):
         return reward / max_reward
 
     def _get_gripper_pos(self):
-        """Get the gripper (end-effector) position for the right arm."""
-        # Right arm is index 0 (so101-0)
+        """Get the gripper reference position for the right arm.
+        
+        Applies two offsets to gripper_frame_link (fixed jaw tip):
+        1. gripper_tip_offset: back along jaw (towards gripper_link)
+        2. gripper_outward_offset: perpendicular, towards the moving jaw (where cube should be)
+        
+        Returns position where cube center should be when properly grasped.
+        """
         right_agent = self.agent.agents[0]
         gripper_link = right_agent.robot.links_map.get("gripper_link")
-        if gripper_link is not None:
-            return gripper_link.pose.p
-        # Fallback: use last link
-        return right_agent.robot.links[-1].pose.p
+        gripper_frame = right_agent.robot.links_map.get("gripper_frame_link")
+        moving_jaw = right_agent.robot.links_map.get("moving_jaw_so101_v1_link")
+        
+        if gripper_frame is None:
+            # Fallback
+            if gripper_link is not None:
+                return gripper_link.pose.p
+            return right_agent.robot.links[-1].pose.p
+        
+        # Start from jaw tip
+        ref_pos = gripper_frame.pose.p.clone()
+        
+        # Apply tip offset (back along jaw direction)
+        if hasattr(self, 'gripper_tip_offset') and self.gripper_tip_offset != 0 and gripper_link is not None:
+            jaw_direction = gripper_frame.pose.p - gripper_link.pose.p
+            jaw_length = torch.norm(jaw_direction, dim=1, keepdim=True)
+            jaw_unit = jaw_direction / (jaw_length + 1e-6)
+            ref_pos = ref_pos - jaw_unit * self.gripper_tip_offset
+        
+        # Apply outward offset (towards moving jaw, perpendicular to fixed jaw)
+        if hasattr(self, 'gripper_outward_offset') and self.gripper_outward_offset != 0 and moving_jaw is not None:
+            outward_direction = moving_jaw.pose.p - gripper_frame.pose.p
+            outward_length = torch.norm(outward_direction, dim=1, keepdim=True)
+            outward_unit = outward_direction / (outward_length + 1e-6)
+            ref_pos = ref_pos + outward_unit * self.gripper_outward_offset
+        
+        return ref_pos
 
     def _compute_lift_dense_reward(self, info):
         """Dense reward for Lift task.
         
-        Supports two modes via self.reward_type:
-        - "parallel": All reward components computed simultaneously
-        - "staged": Reward components unlocked sequentially (curriculum)
-        
         Components:
-        1. reach_reward: Encourage gripper to approach cube
-        2. grasp_reward: Bonus for having cube near gripper (pseudo-grasp)
-        3. lift_reward: Reward proportional to cube height
-        4. success_bonus: Extra reward when lift > threshold
+        1. approach: Encourage gripper tip to approach cube center
+        2. horizontal_penalty: Penalize cube XY displacement from initial position
+        3. lift: Reward proportional to cube height
+        4. success: Bonus when cube is lifted above threshold
         """
         # Get config values
         w = self.reward_weights
         thresholds = self.stage_thresholds
         
+        # Get gripper reference position (gripper_frame_link = jaw tip)
         gripper_pos = self._get_gripper_pos()
         cube_pos = self.red_cube.pose.p
         distance = torch.norm(gripper_pos - cube_pos, dim=1)
         cube_height = cube_pos[:, 2]
         
-        if self.reward_type == "staged":
-            # ===== STAGED REWARD (Curriculum) =====
-            # Each stage only gives reward if previous stage condition is met
-            
-            # Stage 1: Reach (always active)
-            reach_reward = 1.0 - torch.tanh(distance * self.reach_scale)
-            
-            # Stage 2: Grasp (only if reached - within reach_threshold)
-            has_reached = distance < thresholds["reach"]
-            grasp_reward = torch.where(
-                has_reached & (distance < thresholds["grasp"]),
-                torch.ones_like(distance),
-                torch.zeros_like(distance)
-            )
-            
-            # Stage 3: Lift (only if grasped - within grasp_threshold)
-            has_grasped = distance < thresholds["grasp"]
-            lift_reward = torch.where(
-                has_grasped,
-                cube_height,  # Height reward
-                torch.zeros_like(cube_height)
-            )
-            
-            # Stage 4: Success (cube lifted above lift_target)
-            success_bonus = torch.where(
-                cube_height > thresholds["lift"],
-                torch.ones_like(cube_height),
-                torch.zeros_like(cube_height)
-            )
-        else:
-            # ===== PARALLEL REWARD (All at once) =====
-            # All components computed independently
-            
-            reach_reward = 1.0 - torch.tanh(distance * self.reach_scale)
-            grasp_reward = (distance < thresholds["grasp"]).float()
-            lift_reward = torch.clamp(cube_height, min=0.0)
-            
-            success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
-            success_bonus = success.float()
+        # 1. Approach reward: piecewise linear
+        # Full reward within threshold, linear decay to zero at zero_point
+        threshold = self.approach_threshold
+        zero_point = self.approach_zero_point
         
-        # Weighted sum
-        reward = (w["reach"] * reach_reward + 
-                  w["grasp"] * grasp_reward + 
+        approach_reward = torch.where(
+            distance < threshold,
+            torch.ones_like(distance),  # Full reward within threshold
+            torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
+        )
+        
+        # 2. Horizontal penalty: penalize cube XY displacement from initial position
+        # initial_cube_xy is set during episode initialization
+        if hasattr(self, 'initial_cube_xy'):
+            horizontal_dist = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
+            horizontal_penalty = horizontal_dist  # Penalty proportional to displacement
+        else:
+            horizontal_penalty = torch.zeros(self.num_envs, device=self.device)
+        
+        # 3. Lift reward: height of cube
+        lift_reward = torch.clamp(cube_height, min=0.0)
+        
+        # 4. Success bonus: cube lifted above threshold
+        success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
+        success_bonus = success.float()
+        
+        # Weighted sum (horizontal_penalty is negative contribution)
+        reward = (w["approach"] * approach_reward - 
+                  w["horizontal_penalty"] * horizontal_penalty +
                   w["lift"] * lift_reward + 
                   w["success"] * success_bonus)
         
