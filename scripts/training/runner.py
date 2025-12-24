@@ -402,7 +402,14 @@ class PPORunner:
             if "final_info" in eval_infos:
                 mask = eval_infos["_final_info"]
                 for idx in torch.where(mask)[0]:
-                    r = float(eval_infos["final_info"]["episode"]["r"][idx])
+                    # ManiSkill uses 'return', not 'r'
+                    ep_info = eval_infos["final_info"]["episode"]
+                    if "return" in ep_info:
+                        r = float(ep_info["return"][idx])
+                    elif "r" in ep_info:
+                        r = float(ep_info["r"][idx])
+                    else:
+                        continue
                     eval_returns.append(r)
         
         if eval_returns:
