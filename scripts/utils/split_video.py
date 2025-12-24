@@ -35,7 +35,8 @@ def get_video_info(video_path: str):
     return width, height, fps, frames
 
 
-def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx: int = None, rgb_only: bool = False):
+def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx: int = None, 
+                rgb_only: bool = False, cameras: int = 2):
     """
     Split a tiled video into individual environment videos using ffmpeg.
     
@@ -45,6 +46,7 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
         output_dir: Output directory (default: same as input)
         env_idx: If specified, only extract this specific env (0-indexed)
         rgb_only: If True, only extract top half of each cell (RGB, ignore depth/segmentation)
+        cameras: Number of cameras per environment (default=2 for single-arm: front+wrist)
     
     Returns:
         List of output video paths
@@ -64,8 +66,9 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
     nrows = int(np.sqrt(num_envs))
     ncols = math.ceil(num_envs / nrows)
     
-    # Calculate individual cell size
-    cell_w = frame_width // ncols
+    # Cell width = cameras × 640 (each camera is 640px wide)
+    # Cell height = from frame_height / nrows
+    cell_w = cameras * 640
     cell_h = frame_height // nrows
     
     # If rgb_only, only take top half of each cell (RGB is on top, position/seg on bottom)
@@ -76,7 +79,7 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
         print(f"Input video: {video_path.name}")
     
     print(f"  Resolution: {frame_width}x{frame_height}, {fps} fps, {total_frames} frames")
-    print(f"  Grid: {nrows} rows x {ncols} cols")
+    print(f"  Grid: {nrows} rows x {ncols} cols, {cameras} cameras/env")
     print(f"  Cell size: {cell_w}x{cell_h}")
     
     # Determine which envs to extract
@@ -135,6 +138,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
     parser.add_argument("--env_idx", type=int, default=None, help="Only extract this env index (0-indexed)")
     parser.add_argument("--rgb_only", action="store_true", help="Only extract RGB (top half of each cell)")
+    parser.add_argument("--cameras", type=int, default=2, help="Number of cameras per env (2 for single-arm, 3 for dual-arm)")
     
     args = parser.parse_args()
     
@@ -145,10 +149,10 @@ def main():
         video_files = list(input_path.glob("*.mp4"))
         print(f"Found {len(video_files)} video(s) to process")
         for video_file in video_files:
-            split_video(str(video_file), args.num_envs, args.output_dir, args.env_idx, args.rgb_only)
+            split_video(str(video_file), args.num_envs, args.output_dir, args.env_idx, args.rgb_only, args.cameras)
     else:
         # Single file mode
-        split_video(args.input, args.num_envs, args.output_dir, args.env_idx, args.rgb_only)
+        split_video(args.input, args.num_envs, args.output_dir, args.env_idx, args.rgb_only, args.cameras)
 
 
 if __name__ == "__main__":

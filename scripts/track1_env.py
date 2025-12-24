@@ -72,6 +72,9 @@ class Track1Env(BaseEnv):
 
         # Precompute camera processing maps if needed (after super init so device is ready)
         self._setup_camera_processing_maps()
+        
+        # Set single_arm_mode BEFORE super init (needed in _setup_sensors)
+        self.single_arm_mode = task in ["lift", "stack"]
             
         super().__init__(*args, robot_uids=robot_uids, control_mode=control_mode, **kwargs)
 
@@ -403,6 +406,10 @@ class Track1Env(BaseEnv):
         wrist_pose = sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0])
         
         for i, agent in enumerate(self.agent.agents):
+            # Skip left arm wrist camera (index 1) for single-arm tasks
+            if self.single_arm_mode and i == 1:
+                continue
+                
             camera_link = agent.robot.links_map.get("camera_link", None)
             if camera_link is not None:
                 uid = f"wrist_camera_{i}"
@@ -486,6 +493,17 @@ class Track1Env(BaseEnv):
         if self.camera_mode != "direct_pinhole":
             obs = self._apply_camera_processing(obs)
         return obs, reward, terminated, truncated, info
+
+    def _get_obs_state_dict(self, info: dict):
+        """Override to filter left arm obs for single-arm tasks."""
+        obs = super()._get_obs_state_dict(info)
+        
+        if self.single_arm_mode and "agent" in obs:
+            # Remove left arm (so101-1) from agent observations
+            if "so101-1" in obs["agent"]:
+                del obs["agent"]["so101-1"]
+        
+        return obs
 
     def _get_obs_extra(self, info: dict):
         """Return extra observations (state-based).
