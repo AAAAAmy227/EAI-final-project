@@ -48,8 +48,16 @@ class Track1Env(BaseEnv):
         if obs_normalization is None:
             obs_normalization = {}
         self.obs_normalize_enabled = obs_normalization.get("enabled", False)
-        # Per-joint qvel clip ranges: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+        # Per-joint qvel clip ranges
         self.qvel_clip = obs_normalization.get("qvel_clip", [1.0, 2.5, 2.0, 1.0, 0.6, 1.5])
+        # Relative position clip (tcp_to_red_pos, etc.)
+        self.relative_pos_clip = obs_normalization.get("relative_pos_clip", 0.5)
+        # Whether to include absolute positions in obs
+        self.include_abs_pos = obs_normalization.get("include_abs_pos", True)
+        # Position normalization params: (pos - mean) / std
+        self.tcp_pos_norm = obs_normalization.get("tcp_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
+        self.red_cube_pos_norm = obs_normalization.get("red_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
+        self.green_cube_pos_norm = obs_normalization.get("green_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
 
         self.render_scale = render_scale
         
@@ -511,17 +519,26 @@ class Track1Env(BaseEnv):
             if "so101-1" in obs["agent"]:
                 del obs["agent"]["so101-1"]
         
-        # Apply qvel normalization
+        # Apply agent state normalization
         if self.obs_normalize_enabled and "agent" in obs:
             qvel_clip = torch.tensor(self.qvel_clip, device=self.device)
             
             for agent_key in obs["agent"]:
-                if "qvel" in obs["agent"][agent_key]:
-                    qvel = obs["agent"][agent_key]["qvel"]
-                    # Clip and normalize: qvel_norm = clip(qvel, -clip, +clip) / clip → [-1, 1]
+                agent_obs = obs["agent"][agent_key]
+                
+                # qpos: divide by π → approximately [-1, 1] for typical joint ranges
+                if "qpos" in agent_obs:
+                    agent_obs["qpos"] = agent_obs["qpos"] / np.pi
+                
+                # target_qpos: divide by π
+                if "controller" in agent_obs and "target_qpos" in agent_obs["controller"]:
+                    agent_obs["controller"]["target_qpos"] = agent_obs["controller"]["target_qpos"] / np.pi
+                
+                # qvel: clip and normalize
+                if "qvel" in agent_obs:
+                    qvel = agent_obs["qvel"]
                     qvel_clipped = torch.clamp(qvel, -qvel_clip, qvel_clip)
-                    qvel_normalized = qvel_clipped / qvel_clip
-                    obs["agent"][agent_key]["qvel"] = qvel_normalized
+                    agent_obs["qvel"] = qvel_clipped / qvel_clip
         
         return obs
 
@@ -533,28 +550,52 @@ class Track1Env(BaseEnv):
         """
         obs = dict()
         
+        # Helper for position normalization: (pos - mean) / std
+        def normalize_pos(pos, norm_config):
+            mean = torch.tensor(norm_config["mean"], device=self.device)
+            std = torch.tensor(norm_config["std"], device=self.device)
+            return (pos - mean) / std
+        
         # 1. Object State
-        obs["red_cube_pos"] = self.red_cube.pose.p
+        red_cube_pos = self.red_cube.pose.p
         obs["red_cube_rot"] = self.red_cube.pose.q
         
+        green_cube_pos = None
         if self.green_cube is not None:
-            obs["green_cube_pos"] = self.green_cube.pose.p
+            green_cube_pos = self.green_cube.pose.p
             obs["green_cube_rot"] = self.green_cube.pose.q
 
         # 2. End-Effector (TCP) State (Right Arm)
-        gripper_pos = self._get_gripper_pos()
-        obs["tcp_pos"] = gripper_pos
+        tcp_pos = self._get_gripper_pos()
         
         # 3. Relative State (Critical for RL efficiency)
-        # TCP to Red Cube
-        obs["tcp_to_red_pos"] = obs["red_cube_pos"] - obs["tcp_pos"]
+        # TCP to Red Cube - apply clip + normalize
+        tcp_to_red = red_cube_pos - tcp_pos
+        if self.obs_normalize_enabled:
+            clip_val = self.relative_pos_clip
+            tcp_to_red = torch.clamp(tcp_to_red, -clip_val, clip_val) / clip_val
+        obs["tcp_to_red_pos"] = tcp_to_red
         
-        # Lift target height diff
-        # obs["red_lift_height"] = obs["red_cube_pos"][:, 2:3]  # Already in pos
+        # Red to Green (for stack task)
+        if self.task == "stack" and green_cube_pos is not None:
+            red_to_green = green_cube_pos - red_cube_pos
+            if self.obs_normalize_enabled:
+                clip_val = self.relative_pos_clip
+                red_to_green = torch.clamp(red_to_green, -clip_val, clip_val) / clip_val
+            obs["red_to_green_pos"] = red_to_green
         
-        if self.task == "stack" and self.green_cube is not None:
-            # Red to Green (Target)
-            obs["red_to_green_pos"] = obs["green_cube_pos"] - obs["red_cube_pos"]
+        # 4. Absolute positions (optional, controlled by include_abs_pos)
+        if self.include_abs_pos:
+            if self.obs_normalize_enabled:
+                obs["tcp_pos"] = normalize_pos(tcp_pos, self.tcp_pos_norm)
+                obs["red_cube_pos"] = normalize_pos(red_cube_pos, self.red_cube_pos_norm)
+                if green_cube_pos is not None:
+                    obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
+            else:
+                obs["tcp_pos"] = tcp_pos
+                obs["red_cube_pos"] = red_cube_pos
+                if green_cube_pos is not None:
+                    obs["green_cube_pos"] = green_cube_pos
             
         return obs
 

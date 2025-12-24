@@ -1,9 +1,26 @@
 # Observation normalization for single-arm tasks (Lift, Stack)
-# Derived from real trajectory analysis - qvel = diff(qpos) * 30fps
+# Derived from real trajectory analysis
 
 enabled: true
 
-# Per-joint qvel clip ranges (rad/s)
+# Per-joint qvel clip ranges (rad/s) - 99th percentile × 1.2 buffer
 # Format: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
-# Values: 99th percentile from real data × 1.2 buffer
 qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]
+
+# Relative position (tcp_to_red_pos) clip range in meters
+# Typical range is within ±0.5m
+relative_pos_clip: 0.5
+
+# Whether to include absolute positions in obs (tcp_pos, red_cube_pos)
+# Set to false to exclude them (since qpos implicitly encodes tcp_pos)
+include_abs_pos: true
+
+# Absolute position normalization: (pos - mean) / std
+# For single-arm, tcp and cube are in similar workspace regions
+tcp_pos:
+  mean: [0.3, 0.3, 0.2]
+  std: [0.1, 0.1, 0.1]
+
+red_cube_pos:
+  mean: [0.3, 0.3, 0.2]
+  std: [0.1, 0.1, 0.1]
