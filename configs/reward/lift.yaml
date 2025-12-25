@@ -7,7 +7,7 @@ reward_type: "parallel"
 # Reward weights(use negative for penalty)
 weights:
   approach: 2.0        # Approach cube (gripper reference point → cube center)
-  horizontal_penalty: -50.0  # Penalize cube XY displacement from initial position
+  horizontal_displacement: -50.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   success: 10.0        # Task completion bonus
 

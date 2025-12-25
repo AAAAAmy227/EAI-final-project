@@ -418,6 +418,10 @@ class PPORunner:
         eval_successes = []
         episode_rewards = torch.zeros(self.cfg.training.num_eval_envs, device=self.device)
         
+        # Track reward components during eval
+        eval_reward_components = {}
+        eval_component_count = 0
+        
         # Run until we have completed at least num_eval_envs episodes
         # or hit max_steps (episode_length * 2 to ensure completion)
         max_steps = int(self.cfg.env.episode_steps.base * self.cfg.env.episode_steps.multiplier * 2)
@@ -428,6 +432,12 @@ class PPORunner:
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
             episode_rewards += reward
+            
+            # Accumulate reward components
+            if "reward_components" in eval_infos:
+                for k, v in eval_infos["reward_components"].items():
+                    eval_reward_components[k] = eval_reward_components.get(k, 0) + v
+                eval_component_count += 1
             
             # Check for episode completion
             done = terminated | truncated
@@ -449,11 +459,20 @@ class PPORunner:
             mean_return = np.mean(eval_returns)
             success_rate = np.mean(eval_successes) if eval_successes else 0.0
             print(f"  eval/return = {mean_return:.4f}, success_rate = {success_rate:.2%} (n={len(eval_returns)})")
+            
+            # Build log dict
+            eval_logs = {
+                "eval/return": mean_return,
+                "eval/success_rate": success_rate,
+            }
+            
+            # Add eval reward components
+            if eval_component_count > 0:
+                for name, total in eval_reward_components.items():
+                    eval_logs[f"eval_reward/{name}"] = total / eval_component_count
+            
             if self.cfg.wandb.enabled:
-                wandb.log({
-                    "eval/return": mean_return,
-                    "eval/success_rate": success_rate,
-                }, step=self.global_step)
+                wandb.log(eval_logs, step=self.global_step)
         
         # Async split videos if video recording is enabled
         if self.video_dir is not None:
