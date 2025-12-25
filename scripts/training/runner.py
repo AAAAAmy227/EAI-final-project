@@ -128,6 +128,9 @@ class PPORunner:
         self.terminated_count = 0
         self.truncated_count = 0
         
+        # Episode return tracking (per-env accumulator)
+        self.episode_returns = torch.zeros(self.num_envs, device=self.device)
+        
         # Handle timeout termination (if True, truncated episodes bootstrap)
         self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
         
@@ -252,9 +255,10 @@ class PPORunner:
             elif "final_info" in infos and "fail_count" in infos["final_info"]:
                 self.fail_count += infos["final_info"]["fail_count"]
             next_obs_flat = self._flatten_obs(next_obs)
+            # Accumulate episode returns
+            self.episode_returns += reward
             
-            # Log episode info when episodes end (ManiSkill doesn't use final_info pattern)
-            # Check for done envs directly via terminated or truncated
+            # Log episode info when episodes end
             done = next_terminated | next_truncated
             if done.any():
                 for idx in torch.where(done)[0]:
@@ -264,15 +268,10 @@ class PPORunner:
                     else:
                         self.truncated_count += 1
                     
-                    # Get episode return from info if available (ManiSkill accumulates this)
-                    if "elapsed_steps" in infos:
-                        ep_len = int(infos["elapsed_steps"][idx].item())
-                    else:
-                        ep_len = 0
-                    
-                    # Note: ManiSkill doesn't provide cumulative return in info
-                    # We'd need to track it ourselves; for now skip episodic_return logging
-                    # self.avg_returns.append(r) - disabled until we track returns properly
+                    # Record completed episode return
+                    ep_return = self.episode_returns[idx].item()
+                    self.avg_returns.append(ep_return)
+                    self.episode_returns[idx] = 0.0  # Reset for next episode
             
             obs = next_obs_flat
             # Choose bootstrap mask based on config

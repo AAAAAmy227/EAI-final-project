@@ -34,14 +34,14 @@ training:
 # PPO hyperparameters
 ppo:
   learning_rate: 3e-4
-  gamma: 0.8
+  gamma: 0.95
   gae_lambda: 0.9
   num_minibatches: 32
   update_epochs: 4
   clip_coef: 0.2
   clip_vloss: false      # Whether to clip value loss (as per original PPO paper)
   norm_adv: true        # Whether to normalize advantages per minibatch
-  ent_coef: 0.0
+  ent_coef: 0.01
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.2
