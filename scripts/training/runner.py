@@ -300,13 +300,16 @@ class PPORunner:
         
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
         global_step_burnin = None
-        start_time = None
+        training_time = 0.0  # Accumulated training time (excludes eval)
         measure_burnin = 3
+        iter_start_time = None
         
         for iteration in pbar:
             if iteration == measure_burnin:
                 global_step_burnin = self.global_step
-                start_time = time.time()
+            
+            # Start timing this iteration (training only)
+            iter_start_time = time.time()
             
             # LR Annealing
             if self.anneal_lr:
@@ -361,8 +364,8 @@ class PPORunner:
                 from_module(self.agent).data.to_module(self.agent_inference)
             
             # Logging (every iteration after burnin)
-            if global_step_burnin is not None:
-                speed = (self.global_step - global_step_burnin) / (time.time() - start_time)
+            if global_step_burnin is not None and training_time > 0:
+                speed = (self.global_step - global_step_burnin) / training_time
                 avg_return = np.array(self.avg_returns).mean() if self.avg_returns else 0
                 lr = self.optimizer.param_groups[0]["lr"]
                 if isinstance(lr, torch.Tensor):
@@ -412,9 +415,17 @@ class PPORunner:
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)
                     
-            # Evaluation
+            # Accumulate training time for this iteration
+            training_time += time.time() - iter_start_time
+            
+            # Evaluation (timed separately)
             if iteration % self.cfg.training.eval_freq == 0:
+                eval_start = time.time()
                 self._evaluate()
+                eval_duration = time.time() - eval_start
+                print(f"  Eval took {eval_duration:.2f}s")
+                if self.cfg.wandb.enabled:
+                    wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
                 self._save_checkpoint(iteration)
         
         self.envs.close()
