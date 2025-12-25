@@ -442,6 +442,7 @@ class PPORunner:
         eval_obs, _ = self.eval_envs.reset()
         eval_returns = []
         eval_successes = []
+        eval_fails = []
         episode_rewards = torch.zeros(self.cfg.training.num_eval_envs, device=self.device)
         
         # Track reward components during eval
@@ -482,10 +483,14 @@ class PPORunner:
                     eval_returns.append(episode_rewards[idx].item())
                     episode_rewards[idx] = 0.0  # Reset for next episode
                     
-                    # Check success from final_info (ManiSkill provides this)
-                    if "final_info" in eval_infos and "success" in eval_infos["final_info"]:
-                        success = bool(eval_infos["final_info"]["success"][idx])
-                        eval_successes.append(success)
+                    # Check success/fail from final_info (ManiSkill provides this)
+                    if "final_info" in eval_infos:
+                        if "success" in eval_infos["final_info"]:
+                            success = bool(eval_infos["final_info"]["success"][idx])
+                            eval_successes.append(success)
+                        if "fail" in eval_infos["final_info"]:
+                            fail = bool(eval_infos["final_info"]["fail"][idx])
+                            eval_fails.append(fail)
             
             # Stop after collecting enough episodes
             if len(eval_returns) >= self.cfg.training.num_eval_envs:
@@ -494,12 +499,14 @@ class PPORunner:
         if eval_returns:
             mean_return = np.mean(eval_returns)
             success_rate = np.mean(eval_successes) if eval_successes else 0.0
-            print(f"  eval/return = {mean_return:.4f}, success_rate = {success_rate:.2%} (n={len(eval_returns)})")
+            fail_rate = np.mean(eval_fails) if eval_fails else 0.0
+            print(f"  eval/return = {mean_return:.4f}, success_rate = {success_rate:.2%}, fail_rate = {fail_rate:.2%} (n={len(eval_returns)})")
             
             # Build log dict
             eval_logs = {
                 "eval/return": mean_return,
                 "eval/success_rate": success_rate,
+                "eval/fail_rate": fail_rate,
             }
             
             # Add eval reward components
