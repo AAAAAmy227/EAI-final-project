@@ -1354,6 +1354,14 @@ class Track1Env(BaseEnv):
                   w["lift"] * lift_reward + 
                   w["success"] * success_bonus)
         
+        # Store reward components for logging (mean across envs for efficiency)
+        info["reward_components"] = {
+            "approach": (w["approach"] * approach_reward).mean().item(),
+            "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
+            "lift": (w["lift"] * lift_reward).mean().item(),
+            "success": (w["success"] * success_bonus).mean().item(),
+        }
+        
         return reward
 
     def _compute_stack_dense_reward(self, info):

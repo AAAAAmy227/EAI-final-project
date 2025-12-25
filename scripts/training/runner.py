@@ -117,6 +117,8 @@ class PPORunner:
         # Runtime vars
         self.global_step = 0
         self.avg_returns = deque(maxlen=20)
+        self.reward_component_sum = {}  # Accumulated reward components
+        self.reward_component_count = 0  # Step count for averaging
         
         # Termination tracking for logging
         self.terminated_count = 0
@@ -222,6 +224,12 @@ class PPORunner:
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
             storage["rewards"][step] = reward
+            
+            # Accumulate reward components for logging (mean over entire rollout)
+            if "reward_components" in infos:
+                for k, v in infos["reward_components"].items():
+                    self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + v
+                self.reward_component_count += 1
             next_obs_flat = self._flatten_obs(next_obs)
             
             # Log episode info (CleanRL style: log each episode immediately)
@@ -381,6 +389,14 @@ class PPORunner:
                     "rollout/rewards_mean": container["rewards"].mean().item(),
                     "rollout/rewards_max": container["rewards"].max().item(),
                 }
+                
+                # Add reward components (averaged over entire rollout)
+                if self.reward_component_count > 0:
+                    for name, total in self.reward_component_sum.items():
+                        logs[f"reward/{name}"] = total / self.reward_component_count
+                    # Reset for next rollout
+                    self.reward_component_sum = {}
+                    self.reward_component_count = 0
                 
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)
