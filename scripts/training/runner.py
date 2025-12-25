@@ -230,15 +230,27 @@ class PPORunner:
             storage["rewards"][step] = reward
             
             # Accumulate reward components for logging (mean over entire rollout)
+            # On auto_reset, ManiSkillVectorEnv moves original info to 'final_info'
+            reward_comps = None
             if "reward_components" in infos:
-                for k, v in infos["reward_components"].items():
+                reward_comps = infos["reward_components"]
+            elif "final_info" in infos and "reward_components" in infos["final_info"]:
+                reward_comps = infos["final_info"]["reward_components"]
+            if reward_comps is not None:
+                for k, v in reward_comps.items():
                     self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + v
                 self.reward_component_count += 1
             # Accumulate success/fail counts
+            # On auto_reset, ManiSkillVectorEnv moves original info to 'final_info'
+            # Check both locations to capture counts from both regular and reset steps
             if "success_count" in infos:
                 self.success_count += infos["success_count"]
+            elif "final_info" in infos and "success_count" in infos["final_info"]:
+                self.success_count += infos["final_info"]["success_count"]
             if "fail_count" in infos:
                 self.fail_count += infos["fail_count"]
+            elif "final_info" in infos and "fail_count" in infos["final_info"]:
+                self.fail_count += infos["final_info"]["fail_count"]
             next_obs_flat = self._flatten_obs(next_obs)
             
             # Log episode info when episodes end (ManiSkill doesn't use final_info pattern)

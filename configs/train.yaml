@@ -23,7 +23,7 @@ anneal_lr: true
 
 # Training hyperparameters
 training:
-  total_timesteps: 10_000_000
+  total_timesteps: 1_000_000_000
   num_envs: 2048
   num_eval_envs: 8
   num_steps: 50
