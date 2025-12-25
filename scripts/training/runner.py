@@ -232,41 +232,26 @@ class PPORunner:
                 self.reward_component_count += 1
             next_obs_flat = self._flatten_obs(next_obs)
             
-            # Log episode info (CleanRL style: log each episode immediately)
-            if "final_info" in infos:
-                done_mask = infos["_final_info"]
-                for idx in torch.where(done_mask)[0]:
-                    ep_info = infos["final_info"]["episode"]
-                    # ManiSkill uses 'return' and 'episode_len', not 'r' and 'l'
-                    if "return" in ep_info:
-                        r = float(ep_info["return"][idx])
-                    elif "r" in ep_info:
-                        r = float(ep_info["r"][idx])
+            # Log episode info when episodes end (ManiSkill doesn't use final_info pattern)
+            # Check for done envs directly via terminated or truncated
+            done = next_terminated | next_truncated
+            if done.any():
+                for idx in torch.where(done)[0]:
+                    # Track termination reason
+                    if next_terminated[idx].item():
+                        self.terminated_count += 1
                     else:
-                        r = 0.0
+                        self.truncated_count += 1
                     
-                    # Get episode length
-                    if "episode_len" in ep_info:
-                        ep_len = int(ep_info["episode_len"][idx])
-                    elif "l" in ep_info:
-                        ep_len = int(ep_info["l"][idx])
+                    # Get episode return from info if available (ManiSkill accumulates this)
+                    if "elapsed_steps" in infos:
+                        ep_len = int(infos["elapsed_steps"][idx].item())
                     else:
                         ep_len = 0
                     
-                    # Track termination reason
-                    if next_terminated[idx]:
-                        self.terminated_count += 1
-                    elif next_truncated[idx]:
-                        self.truncated_count += 1
-                    
-                    self.avg_returns.append(r)
-                    
-                    # CleanRL-style immediate logging per episode
-                    if self.cfg.wandb.enabled:
-                        wandb.log({
-                            "charts/episodic_return": r,
-                            "charts/episodic_length": ep_len,
-                        }, step=self.global_step)
+                    # Note: ManiSkill doesn't provide cumulative return in info
+                    # We'd need to track it ourselves; for now skip episodic_return logging
+                    # self.avg_returns.append(r) - disabled until we track returns properly
             
             obs = next_obs_flat
             # Choose bootstrap mask based on config

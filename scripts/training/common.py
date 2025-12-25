@@ -250,7 +250,12 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     else:
         env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=cfg.env.include_state)
     
-    # Wrap with ManiSkillVectorEnv
-    env = ManiSkillVectorEnv(env, num_envs, ignore_terminations=True, record_metrics=True)
+    # Wrap with ManiSkillVectorEnv (different config for training vs eval)
+    if for_eval:
+        # Eval: ignore terminations to run full episodes, record metrics for final_info
+        env = ManiSkillVectorEnv(env, num_envs, ignore_terminations=True, record_metrics=True)
+    else:
+        # Training: auto-reset on terminations (fail/success triggers reset)
+        env = ManiSkillVectorEnv(env, num_envs, auto_reset=True, ignore_terminations=False)
     
     return env
