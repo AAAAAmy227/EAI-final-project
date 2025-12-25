@@ -40,4 +40,4 @@ tcp_pos:
 red_cube_pos:
   mean: [0.479, 0.25, 0.03]
   std: [0.083, 0.082, 0.03]
-  clip_with_std: 1.0
+  clip_with_std: 1.5
