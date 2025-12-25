@@ -27,7 +27,7 @@ gripper_outward_offset: 0.015  # Perpendicular: outward for cube (1.5cm)
 # Moving jaw (approach2) reference point and reward curve
 # Direction: local (-0.2, -1, 0.23) normalized, scale 1.8
 moving_jaw_tip_offset: 0.015   # Along jaw direction: back from tip
-moving_jaw_outward_offset: 0.01  # Along local -X: towards the cube center
+moving_jaw_outward_offset: 0.015  # Along local -X: towards the cube center
 approach2_threshold: 0.01      # Distance for full reward (1cm)
 approach2_zero_point: 0.20     # Distance where reward becomes 0 (20cm)
 

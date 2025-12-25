@@ -94,9 +94,11 @@ def main():
     ref_cube = make_sphere(scene, "reference", [1, 0, 0, 0.7], radius=0.015)  # 3cm diameter sphere, semi-transparent
     fixed_jaw_sphere = make_sphere(scene, "fixed_jaw", [0, 0, 1, 1], radius=0.008)
     moving_jaw_sphere = make_sphere(scene, "moving_jaw", [0, 1, 0, 1], radius=0.008)
+    moving_jaw_ref_sphere = make_sphere(scene, "moving_jaw_ref", [1, 1, 0, 0.8], radius=0.012)  # Yellow: moving jaw reference
     
     print("\n=== DEBUG MARKERS ===")
-    print("  RED SPHERE (3cm): Gripper reference point (where cube center should be)")
+    print("  RED SPHERE (3cm): Fixed jaw reference point (where cube should be)")
+    print("  YELLOW SPHERE: Moving jaw reference point (with offsets from config)")
     print("  BLUE (small): Fixed jaw tip (gripper_frame_link)")
     print("  GREEN (small): Moving jaw tip (calculated)")
     print("  === Moving Jaw Coordinate System (5cm from origin) ===")
@@ -148,8 +150,20 @@ def main():
                 local_forward = local_forward / np.linalg.norm(local_forward)  # Normalize
                 moving_jaw_direction = rot.apply(local_forward)
                 
-                moving_jaw_tip_offset = 0.045  # ~4.5cm from base to tip
-                moving_jaw_tip = moving_jaw_base + moving_jaw_direction * moving_jaw_tip_offset * scale
+                moving_jaw_tip_offset_base = 0.045  # ~4.5cm from base to tip
+                moving_jaw_tip = moving_jaw_base + moving_jaw_direction * moving_jaw_tip_offset_base * scale
+                
+                # Apply config offsets (from lift.yaml)
+                tip_offset_config = 0.015  # moving_jaw_tip_offset from config
+                outward_offset_config = 0.015  # moving_jaw_outward_offset from config
+                
+                # Back along jaw direction
+                moving_jaw_ref = moving_jaw_tip - moving_jaw_direction * tip_offset_config
+                
+                # Outward along local -X
+                local_minus_x = np.array([-1.0, 0.0, 0.0])
+                outward_dir = rot.apply(local_minus_x)
+                moving_jaw_ref = moving_jaw_ref + outward_dir * outward_offset_config
                 
                 # Visualize coordinate system: spheres at axis endpoints (5cm from origin)
                 axis_length = 0.05
@@ -179,7 +193,8 @@ def main():
                 
                 # Set positions
                 fixed_jaw_sphere.set_pose(sapien.Pose(p=fixed_jaw_tip))
-                moving_jaw_sphere.set_pose(sapien.Pose(p=moving_jaw_tip))  # Now uses moving jaw's own direction
+                moving_jaw_sphere.set_pose(sapien.Pose(p=moving_jaw_tip))  # Green: raw tip position
+                moving_jaw_ref_sphere.set_pose(sapien.Pose(p=moving_jaw_ref))  # Yellow: reference with offsets
                 ref_cube.set_pose(sapien.Pose(p=ref_pos))
             
             env.render()
