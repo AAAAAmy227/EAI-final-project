@@ -117,7 +117,7 @@ class Track1Env(BaseEnv):
         self.reward_weights = {
             # New style
             "approach": weights.get("approach", weights.get("reach", 1.0)),
-            "horizontal_penalty": weights.get("horizontal_penalty", 0.0),
+            "horizontal_displacement": weights.get("horizontal_displacement", 0.0),
             "lift": weights.get("lift", 5.0),
             "success": weights.get("success", 10.0),
             # Legacy (for backward compatibility)
@@ -156,11 +156,12 @@ class Track1Env(BaseEnv):
         
         if self.single_arm_mode and self.agent is not None:
             # Original action space is Dict({'so101-0': Box, 'so101-1': Box})
-            # We want to expose only 'so101-0' as a flat Box
+            # so101-0 is at X=0.119 (left), so101-1 is at X=0.481 (right)
+            # For single-arm tasks, we use the RIGHT arm (so101-1)
             if isinstance(self.single_action_space, gym.spaces.Dict):
-                # Get the right arm (so101-0) action space
-                self._right_arm_key = "so101-0"
-                self._left_arm_key = "so101-1"
+                # Right arm is so101-1 (larger X coordinate)
+                self._right_arm_key = "so101-1"
+                self._left_arm_key = "so101-0"
                 
                 right_arm_space = self.single_action_space[self._right_arm_key]
                 
@@ -429,8 +430,9 @@ class Track1Env(BaseEnv):
         wrist_pose = sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0])
         
         for i, agent in enumerate(self.agent.agents):
-            # Skip left arm wrist camera (index 1) for single-arm tasks
-            if self.single_arm_mode and i == 1:
+            # Skip left arm wrist camera (index 0, so101-0) for single-arm tasks
+            # Right arm is index 1 (so101-1)
+            if self.single_arm_mode and i == 0:
                 continue
                 
             camera_link = agent.robot.links_map.get("camera_link", None)
@@ -522,9 +524,10 @@ class Track1Env(BaseEnv):
         obs = super()._get_obs_state_dict(info)
         
         if self.single_arm_mode and "agent" in obs:
-            # Remove left arm (so101-1) from agent observations
-            if "so101-1" in obs["agent"]:
-                del obs["agent"]["so101-1"]
+            # Remove left arm (so101-0) from agent observations
+            # Right arm is so101-1 (larger X coordinate)
+            if "so101-0" in obs["agent"]:
+                del obs["agent"]["so101-0"]
         
         # Apply agent state normalization
         if self.obs_normalize_enabled and "agent" in obs:
@@ -1270,7 +1273,8 @@ class Track1Env(BaseEnv):
         
         Returns position where cube center should be when properly grasped.
         """
-        right_agent = self.agent.agents[0]
+        # Right arm is agents[1] (so101-1, at X=0.481)
+        right_agent = self.agent.agents[1]
         gripper_link = right_agent.robot.links_map.get("gripper_link")
         gripper_frame = right_agent.robot.links_map.get("gripper_frame_link")
         moving_jaw = right_agent.robot.links_map.get("moving_jaw_so101_v1_link")
@@ -1305,7 +1309,7 @@ class Track1Env(BaseEnv):
         
         Components:
         1. approach: Encourage gripper tip to approach cube center
-        2. horizontal_penalty: Penalize cube XY displacement from initial position
+        2. horizontal_displacement: Cube XY displacement from initial position (meters)
         3. lift: Reward proportional to cube height
         4. success: Bonus when cube is lifted above threshold
         """
@@ -1330,13 +1334,12 @@ class Track1Env(BaseEnv):
             torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
         )
         
-        # 2. Horizontal penalty: penalize cube XY displacement from initial position
+        # 2. Horizontal displacement: cube XY displacement from initial position (positive value)
         # initial_cube_xy is set during episode initialization
         if hasattr(self, 'initial_cube_xy'):
-            horizontal_dist = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
-            horizontal_penalty = horizontal_dist  # Penalty proportional to displacement
+            horizontal_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
         else:
-            horizontal_penalty = torch.zeros(self.num_envs, device=self.device)
+            horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
         
         # 3. Lift reward: height of cube
         lift_reward = torch.clamp(cube_height, min=0.0)
@@ -1345,9 +1348,9 @@ class Track1Env(BaseEnv):
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
         
-        # Weighted sum (horizontal_penalty is negative contribution)
-        reward = (w["approach"] * approach_reward - 
-                  w["horizontal_penalty"] * horizontal_penalty +
+        # Weighted sum (use negative weights for penalties)
+        reward = (w["approach"] * approach_reward +
+                  w["horizontal_displacement"] * horizontal_displacement +
                   w["lift"] * lift_reward + 
                   w["success"] * success_bonus)
         

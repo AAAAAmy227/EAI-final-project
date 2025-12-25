@@ -5,7 +5,7 @@ enabled: true
 
 # qpos normalization scale (divide by this value)
 # Default π works for most robots with joint limits ±π
-qpos_scale: 3.14159
+qpos_scale: 1.5
 
 # Per-joint qvel clip ranges (rad/s) - 99th percentile × 1.2 buffer
 # Format: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
