@@ -147,8 +147,21 @@ def main():
     if input_path.is_dir():
         # Batch mode: process all mp4 files
         video_files = list(input_path.glob("*.mp4"))
-        print(f"Found {len(video_files)} video(s) to process")
+        
+        # Filter out videos that have already been split
+        split_dir = input_path / "split"
+        videos_to_process = []
         for video_file in video_files:
+            output_folder = split_dir / video_file.stem
+            if not output_folder.exists():
+                videos_to_process.append(video_file)
+        
+        if not videos_to_process:
+            # All videos already processed
+            return
+        
+        print(f"Found {len(videos_to_process)} new video(s) to process (skipping {len(video_files) - len(videos_to_process)} already split)")
+        for video_file in videos_to_process:
             split_video(str(video_file), args.num_envs, args.output_dir, args.env_idx, args.rgb_only, args.cameras)
     else:
         # Single file mode
