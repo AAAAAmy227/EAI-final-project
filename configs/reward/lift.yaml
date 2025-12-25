@@ -6,13 +6,14 @@ reward_type: "parallel"
 
 # Reward weights (use negative for penalty)
 weights:
-  approach: 2.0        # Approach cube (gripper reference point → cube center)
+  approach: 2.0        # Approach cube (fixed jaw reference point → cube center)
+  approach2: 2.0       # Approach cube (moving jaw reference point → cube center)
   horizontal_displacement: -5.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   success: 100.0        # Task completion bonus
   fail: -100.0         # Penalty when cube goes out of bounds
 
-# Approach reward curve (piecewise linear)
+# Fixed jaw approach reward curve (piecewise linear)
 # reward = 1.0 if distance < threshold
 # reward = linear decay from 1.0 to 0.0 between threshold and zero_point
 approach_threshold: 0.01     # Distance for full reward (1cm)
@@ -22,6 +23,13 @@ approach_zero_point: 0.20    # Distance where reward becomes 0 (20cm)
 # The reference point is where the cube center should be when properly grasped
 gripper_tip_offset: 0.015    # Along jaw: back from tip (1.5cm)
 gripper_outward_offset: 0.015  # Perpendicular: outward for cube (1.5cm)
+
+# Moving jaw (approach2) reference point and reward curve
+# Direction: local (-0.2, -1, 0.23) normalized, scale 1.8
+moving_jaw_tip_offset: 0.015   # Along jaw direction: back from tip
+moving_jaw_outward_offset: 0.01  # Along local -X: towards the cube center
+approach2_threshold: 0.01      # Distance for full reward (1cm)
+approach2_zero_point: 0.20     # Distance where reward becomes 0 (20cm)
 
 # Lift reward height range (meters)
 # lift_reward = clamp(height, 0, lift_max_height) * weight

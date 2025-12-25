@@ -180,6 +180,13 @@ class Track1Env(BaseEnv):
             }
         else:
             self.spawn_bounds = None  # Will use grid_bounds["right"] as default
+        
+        # Moving jaw (approach2) reference point config
+        self.reward_weights["approach2"] = weights.get("approach2", 0.0)
+        self.moving_jaw_tip_offset = reward_config.get("moving_jaw_tip_offset", 0.015)
+        self.moving_jaw_outward_offset = reward_config.get("moving_jaw_outward_offset", 0.01)
+        self.approach2_threshold = reward_config.get("approach2_threshold", 0.01)
+        self.approach2_zero_point = reward_config.get("approach2_zero_point", 0.20)
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1381,14 +1388,85 @@ class Track1Env(BaseEnv):
         
         return ref_pos
 
+    def _get_moving_jaw_pos(self):
+        """Get the moving jaw reference position for the right arm.
+        
+        Uses calibrated local direction: (-0.2, -1, 0.23) normalized, scaled by 1.8
+        Then applies offsets:
+        - moving_jaw_tip_offset: back along the jaw direction
+        - moving_jaw_outward_offset: along local -X towards cube center
+        
+        Returns position where cube center should be when properly grasped.
+        """
+        right_agent = self.agent.agents[1]
+        moving_jaw = right_agent.robot.links_map.get("moving_jaw_so101_v1_link")
+        
+        if moving_jaw is None:
+            # Fallback to fixed jaw
+            return self._get_gripper_pos()
+        
+        # Get moving jaw base position and orientation
+        moving_jaw_base = moving_jaw.pose.p  # [num_envs, 3]
+        moving_jaw_quat = moving_jaw.pose.q  # [num_envs, 4] - SAPIEN uses [w, x, y, z]
+        
+        # Calibrated local direction to jaw tip: (-0.2, -1, 0.23) normalized
+        import torch
+        x_comp, y_comp, z_comp = -0.2, -1.0, 0.23
+        local_forward = torch.tensor([x_comp, y_comp, z_comp], device=self.device, dtype=torch.float32)
+        local_forward = local_forward / torch.norm(local_forward)
+        
+        # Convert quaternion to rotation matrix and apply to local_forward
+        # SAPIEN quaternion: [w, x, y, z]
+        w, x, y, z = moving_jaw_quat[:, 0], moving_jaw_quat[:, 1], moving_jaw_quat[:, 2], moving_jaw_quat[:, 3]
+        
+        # Rotation matrix from quaternion
+        R00 = 1 - 2*(y**2 + z**2)
+        R01 = 2*(x*y - w*z)
+        R02 = 2*(x*z + w*y)
+        R10 = 2*(x*y + w*z)
+        R11 = 1 - 2*(x**2 + z**2)
+        R12 = 2*(y*z - w*x)
+        R20 = 2*(x*z - w*y)
+        R21 = 2*(y*z + w*x)
+        R22 = 1 - 2*(x**2 + y**2)
+        
+        # Apply rotation to local_forward: world_dir = R @ local_forward
+        jaw_direction = torch.stack([
+            R00 * local_forward[0] + R01 * local_forward[1] + R02 * local_forward[2],
+            R10 * local_forward[0] + R11 * local_forward[1] + R12 * local_forward[2],
+            R20 * local_forward[0] + R21 * local_forward[1] + R22 * local_forward[2],
+        ], dim=1)  # [num_envs, 3]
+        
+        # Scale to reach jaw tip (calibrated: 1.8 * 0.045 = 0.081)
+        scale = 1.8
+        tip_dist = 0.045 * scale
+        ref_pos = moving_jaw_base + jaw_direction * tip_dist
+        
+        # Apply tip offset (back along jaw direction)
+        if hasattr(self, 'moving_jaw_tip_offset') and self.moving_jaw_tip_offset != 0:
+            ref_pos = ref_pos - jaw_direction * self.moving_jaw_tip_offset
+        
+        # Apply outward offset (along local -X, towards cube center)
+        if hasattr(self, 'moving_jaw_outward_offset') and self.moving_jaw_outward_offset != 0:
+            local_minus_x = torch.tensor([-1.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
+            outward_dir = torch.stack([
+                R00 * local_minus_x[0] + R01 * local_minus_x[1] + R02 * local_minus_x[2],
+                R10 * local_minus_x[0] + R11 * local_minus_x[1] + R12 * local_minus_x[2],
+                R20 * local_minus_x[0] + R21 * local_minus_x[1] + R22 * local_minus_x[2],
+            ], dim=1)
+            ref_pos = ref_pos + outward_dir * self.moving_jaw_outward_offset
+        
+        return ref_pos
+
     def _compute_lift_dense_reward(self, info):
         """Dense reward for Lift task.
         
         Components:
-        1. approach: Encourage gripper tip to approach cube center
-        2. horizontal_displacement: Cube XY displacement from initial position (meters)
-        3. lift: Reward proportional to cube height
-        4. success: Bonus when cube is lifted above threshold
+        1. approach: Encourage fixed jaw to approach cube center
+        2. approach2: Encourage moving jaw to approach cube center
+        3. horizontal_displacement: Cube XY displacement from initial position (meters)
+        4. lift: Reward proportional to cube height
+        5. success: Bonus when cube is lifted above threshold
         """
         # Get config values
         w = self.reward_weights
@@ -1400,7 +1478,7 @@ class Track1Env(BaseEnv):
         distance = torch.norm(gripper_pos - cube_pos, dim=1)
         cube_height = cube_pos[:, 2]
         
-        # 1. Approach reward: piecewise linear
+        # 1. Approach reward (fixed jaw): piecewise linear
         # Full reward within threshold, linear decay to zero at zero_point
         threshold = self.approach_threshold
         zero_point = self.approach_zero_point
@@ -1411,29 +1489,42 @@ class Track1Env(BaseEnv):
             torch.clamp(1.0 - (distance - threshold) / (zero_point - threshold), min=0.0)
         )
         
-        # 2. Horizontal displacement: cube XY displacement from initial position (positive value)
+        # 2. Approach2 reward (moving jaw): same piecewise linear formula
+        moving_jaw_pos = self._get_moving_jaw_pos()
+        distance2 = torch.norm(moving_jaw_pos - cube_pos, dim=1)
+        threshold2 = self.approach2_threshold
+        zero_point2 = self.approach2_zero_point
+        
+        approach2_reward = torch.where(
+            distance2 < threshold2,
+            torch.ones_like(distance2),
+            torch.clamp(1.0 - (distance2 - threshold2) / (zero_point2 - threshold2), min=0.0)
+        )
+        
+        # 3. Horizontal displacement: cube XY displacement from initial position (positive value)
         # initial_cube_xy is set during episode initialization
         if hasattr(self, 'initial_cube_xy'):
             horizontal_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
         else:
             horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
         
-        # 3. Lift reward: height of cube (capped at lift_max_height if set)
+        # 4. Lift reward: height of cube (capped at lift_max_height if set)
         if self.lift_max_height is not None:
             lift_reward = torch.clamp(cube_height, min=0.0, max=self.lift_max_height)
         else:
             lift_reward = torch.clamp(cube_height, min=0.0)
         
-        # 4. Success bonus: cube lifted above threshold for stable_hold_time
+        # 5. Success bonus: cube lifted above threshold for stable_hold_time
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
         
-        # 5. Fail penalty: cube out of bounds or fallen
+        # 6. Fail penalty: cube out of bounds or fallen
         fail = info.get("fail", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         fail_penalty = fail.float()
         
         # Weighted sum (use negative weights for penalties)
         reward = (w["approach"] * approach_reward +
+                  w.get("approach2", 0.0) * approach2_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
                   w["lift"] * lift_reward + 
                   w["success"] * success_bonus +
@@ -1444,6 +1535,7 @@ class Track1Env(BaseEnv):
         # Success/Fail: count of envs (discrete events)
         info["reward_components"] = {
             "approach": (w["approach"] * approach_reward).mean().item(),
+            "approach2": (w.get("approach2", 0.0) * approach2_reward).mean().item(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
             "lift": (w["lift"] * lift_reward).mean().item(),
         }
