@@ -339,12 +339,13 @@ class PPORunner:
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
         global_step_burnin = None
         training_time = 0.0  # Accumulated training time (excludes eval)
-        measure_burnin = 3
+        measure_burnin = 2
         iter_start_time = None
         
         for iteration in pbar:
             if iteration == measure_burnin:
                 global_step_burnin = self.global_step
+                training_time = 0.0  # Reset timer to skip initialization/warmup overhead
             
             # Start timing this iteration (training only)
             iter_start_time = time.time()
