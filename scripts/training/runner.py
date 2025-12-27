@@ -548,8 +548,10 @@ class PPORunner:
         max_steps += 2
         
         for step in range(max_steps):
+            # CRITICAL: Flatten obs like train does, otherwise agent gets wrong input format
+            obs_flat = self._flatten_obs(eval_obs)
             with torch.no_grad():
-                eval_action = agent.get_action(eval_obs, deterministic=True)
+                eval_action = agent.get_action(obs_flat, deterministic=True)
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
             episode_rewards += reward
