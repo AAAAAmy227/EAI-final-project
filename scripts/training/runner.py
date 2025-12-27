@@ -122,8 +122,8 @@ class PPORunner:
         self.avg_returns = deque(maxlen=20)
         self.reward_component_sum = {}  # Accumulated reward components
         self.reward_component_count = 0  # Step count for averaging
-        self.success_count = 0  # Success events during rollout
-        self.fail_count = 0  # Fail events during rollout
+        self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)  # GPU accumulator
+        self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)  # GPU accumulator
         
         # Termination tracking for logging
         self.terminated_count = 0
@@ -247,14 +247,13 @@ class PPORunner:
             # Accumulate success/fail counts
             # On auto_reset, ManiSkillVectorEnv moves original info to 'final_info'
             # Check both locations to capture counts from both regular and reset steps
+            # Accumulate success/fail counts on GPU (no sync until logging)
             if "success_count" in infos:
-                self.success_count += infos["success_count"]
-            elif "final_info" in infos and "success_count" in infos["final_info"]:
-                self.success_count += infos["final_info"]["success_count"]
+                val = infos["success_count"]
+                self.success_count += val if isinstance(val, torch.Tensor) else val
             if "fail_count" in infos:
-                self.fail_count += infos["fail_count"]
-            elif "final_info" in infos and "fail_count" in infos["final_info"]:
-                self.fail_count += infos["final_info"]["fail_count"]
+                val = infos["fail_count"]
+                self.fail_count += val if isinstance(val, torch.Tensor) else val
             next_obs_flat = self._flatten_obs(next_obs)
             # Accumulate episode returns
             self.episode_returns += reward
@@ -403,14 +402,14 @@ class PPORunner:
                 if self.reward_component_count > 0:
                     for name, total in self.reward_component_sum.items():
                         logs[f"reward/{name}"] = total / self.reward_component_count
-                    # Add success/fail counts (total in this rollout)
-                    logs["reward/success_count"] = self.success_count
-                    logs["reward/fail_count"] = self.fail_count
-                    # Reset for next rollout
+                    # Add success/fail counts (sync to CPU only here)
+                    logs["reward/success_count"] = self.success_count.item() if hasattr(self.success_count, 'item') else self.success_count
+                    logs["reward/fail_count"] = self.fail_count.item() if hasattr(self.fail_count, 'item') else self.fail_count
+                    # Reset for next rollout (keep as GPU tensors)
                     self.reward_component_sum = {}
                     self.reward_component_count = 0
-                    self.success_count = 0
-                    self.fail_count = 0
+                    self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)
+                    self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)
                 
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)

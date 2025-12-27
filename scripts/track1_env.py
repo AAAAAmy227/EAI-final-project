@@ -1659,23 +1659,22 @@ class Track1Env(BaseEnv):
                   w["success"] * success_bonus +
                   w["fail"] * fail_penalty)
         
-        # Store reward components for logging
-        # Dense rewards: mean across envs (continuous signals)
-        # Success/Fail: count of envs (discrete events)
+        # Store reward components for logging (keep as GPU tensors to avoid sync)
+        # Runner will call .item() only when logging is needed
         info["reward_components"] = {
-            "approach": (w["approach"] * approach_reward).mean().item(),
-            "grasp": (w.get("grasp", 0.0) * grasp_reward).mean().item(),
-            "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean().item(),
-            "lift": (w["lift"] * effective_lift_reward).mean().item(),
-            "action_rate": (w.get("action_rate", 0.0) * action_rate).mean().item(),
+            "approach": (w["approach"] * approach_reward).mean(),
+            "grasp": (w.get("grasp", 0.0) * grasp_reward).mean(),
+            "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
+            "lift": (w["lift"] * effective_lift_reward).mean(),
+            "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
         }
         # Only log approach2 in dual_point mode
         if self.approach_mode == "dual_point":
-            info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean().item()
-        # Track success/fail/grasp counts separately (not averaged)
-        info["success_count"] = success.sum().item()
-        info["fail_count"] = fail.sum().item()
-        info["grasp_count"] = is_grasped.sum().item()
+            info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean()
+        # Track success/fail/grasp counts (keep as GPU tensors)
+        info["success_count"] = success.sum()
+        info["fail_count"] = fail.sum()
+        info["grasp_count"] = is_grasped.sum()
         
         return reward
 
