@@ -670,11 +670,7 @@ class Track1Env(BaseEnv):
             obs["green_cube_rot"] = self.green_cube.pose.q
 
         # 2. End-Effector (TCP) State (Right Arm) - using agent.tcp_pos (fingertip midpoint)
-        # For single-arm tasks, use right arm (so101-1)
-        if hasattr(self, 'single_arm_mode') and self.single_arm_mode:
-            agent = self.agent.agents["so101-1"]
-        else:
-            agent = self.agent if not hasattr(self.agent, 'agents') else self.agent.agents.get("so101-1", self.agent)
+        agent = self.right_arm
         
         tcp_pos = agent.tcp_pos  # Uses new fingertip-based calculation
         tcp_pose = agent.tcp_pose
@@ -1077,6 +1073,27 @@ class Track1Env(BaseEnv):
             self._randomize_robot_properties()
         else:
             super()._load_agent(options, agent_poses)
+        
+        # Create agents dict for easy access by name
+        self._agents_dict = {
+            "left": self.agent.agents[0],    # so101-0
+            "right": self.agent.agents[1],   # so101-1
+        }
+    
+    @property
+    def agents_dict(self):
+        """Get agents as a dict for intuitive access: agents_dict['left'] or agents_dict['right']."""
+        return self._agents_dict
+    
+    @property
+    def right_arm(self):
+        """Shortcut to access the right arm agent."""
+        return self._agents_dict["right"]
+    
+    @property
+    def left_arm(self):
+        """Shortcut to access the left arm agent."""
+        return self._agents_dict["left"]
 
     def _randomize_robot_properties(self):
         """Randomize robot joint friction and damping for domain randomization."""
@@ -1595,11 +1612,7 @@ class Track1Env(BaseEnv):
         fail_penalty = fail.float()
         
         # 8. Grasp reward: bonus for successfully grasping the cube
-        # Get the right arm agent
-        if hasattr(self, 'single_arm_mode') and self.single_arm_mode:
-            agent = self.agent.agents["so101-1"]
-        else:
-            agent = self.agent if not hasattr(self.agent, 'agents') else self.agent.agents.get("so101-1", self.agent)
+        agent = self.right_arm
         
         is_grasped = agent.is_grasping(
             self.red_cube,
