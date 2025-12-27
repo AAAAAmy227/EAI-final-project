@@ -1592,11 +1592,14 @@ class Track1Env(BaseEnv):
         else:
             horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
         
-        # 4. Lift reward: height of cube (capped at lift_max_height if set)
+        # 4. Lift reward: height of cube above baseline (subtract initial resting height)
+        # Cube starts at half_size height (0.015m for 3cm cube)
+        cube_baseline_height = 0.015  # half_size of red cube
+        lift_height = cube_height - cube_baseline_height
         if self.lift_max_height is not None:
-            lift_reward = torch.clamp(cube_height, min=0.0, max=self.lift_max_height)
+            lift_reward = torch.clamp(lift_height, min=0.0, max=self.lift_max_height)
         else:
-            lift_reward = torch.clamp(cube_height, min=0.0)
+            lift_reward = torch.clamp(lift_height, min=0.0)
         
         # 5. Action rate penalty: ||action_t - action_{t-1}||^2
         if action is not None and w.get("action_rate", 0.0) != 0:
