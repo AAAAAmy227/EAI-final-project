@@ -135,6 +135,14 @@ class PPORunner:
         # Handle timeout termination (if True, truncated episodes bootstrap)
         self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
         
+        # Observation statistics logging (for monitoring normalization quality)
+        self.log_obs_stats = cfg.get("log_obs_stats", False)
+        if self.log_obs_stats:
+            # EMA for mean/var (no accumulation overflow, smooth updates)
+            self.obs_ema_tau = cfg.get("obs_stats_tau", 0.01)  # EMA decay rate from config
+            self.obs_ema_mean = torch.zeros(self.obs_dim, device=self.device)
+            self.obs_ema_var = torch.ones(self.obs_dim, device=self.device)
+        
         # Reward mode for logging
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
         self.staged_reward = self.reward_mode == "staged_dense"
@@ -257,6 +265,15 @@ class PPORunner:
             next_obs_flat = self._flatten_obs(next_obs)
             # Accumulate episode returns
             self.episode_returns += reward
+            
+            # Update observation EMA statistics (for monitoring normalization)
+            if self.log_obs_stats:
+                # Compute batch mean and var
+                batch_mean = obs_flat.mean(dim=0)
+                batch_var = obs_flat.var(dim=0, unbiased=False)
+                # EMA update (lerp_ is in-place, no new tensor allocation)
+                self.obs_ema_mean.lerp_(batch_mean, self.obs_ema_tau)
+                self.obs_ema_var.lerp_(batch_var, self.obs_ema_tau)
             
             # Log episode info when episodes end
             done = next_terminated | next_truncated
@@ -410,6 +427,18 @@ class PPORunner:
                     self.reward_component_count = 0
                     self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)
                     self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)
+                
+                # Log observation statistics (for monitoring normalization quality)
+                # Ideal: mean ≈ 0, std ≈ 1 indicates good normalization
+                if self.log_obs_stats:
+                    obs_std = torch.sqrt(torch.clamp(self.obs_ema_var, min=1e-8))
+                    
+                    # Log overall statistics (sync to CPU only here)
+                    logs["obs/mean_avg"] = self.obs_ema_mean.mean().item()
+                    logs["obs/std_avg"] = obs_std.mean().item()
+                    logs["obs/mean_max"] = self.obs_ema_mean.abs().max().item()
+                    logs["obs/std_max"] = obs_std.max().item()
+                    logs["obs/std_min"] = obs_std.min().item()
                 
                 if self.cfg.wandb.enabled:
                     wandb.log(logs, step=self.global_step)
