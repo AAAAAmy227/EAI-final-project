@@ -983,6 +983,15 @@ class PPORunner:
             model_path = output_dir / f"iteration_{iteration}.pt"
             state = {
                 "agent": self.agent.state_dict(),
+                # Observation normalization (RunningMeanStd)
+                "obs_rms_mean": self.obs_rms_mean,
+                "obs_rms_var": self.obs_rms_var,
+                "obs_rms_count": self.obs_rms_count,
+                # Reward normalization (RunningMeanStd for returns)
+                "return_rms_mean": self.return_rms_mean,
+                "return_rms_var": self.return_rms_var,
+                "return_rms_count": self.return_rms_count,
+                # Legacy EMA stats (for backward compatibility)
                 "obs_ema_mean": self.obs_ema_mean,
                 "obs_ema_var": self.obs_ema_var,
             }

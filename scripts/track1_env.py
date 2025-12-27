@@ -1746,13 +1746,13 @@ class Track1Env(BaseEnv):
             action_rate = torch.zeros(self.num_envs, device=self.device)
         
         # 5.5 Hold progress reward: proportional to hold time at lift_target height
-        # hold_progress = hold_counter / stable_hold_steps, capped at 1.0
-        # Only computed when stable_hold_steps > 0 and cube is above lift_target
+        # Total reward over the duration will sum to 1.0 (unit part)
+        # R_t = 2 * counter / (T * (T + 1)), overall quadratic total reward
         if self.stable_hold_steps > 0 and hasattr(self, 'lift_hold_counter'):
-            hold_progress = torch.clamp(
-                self.lift_hold_counter.float() / self.stable_hold_steps,
-                min=0.0, max=1.0
-            )
+            T = float(self.stable_hold_steps)
+            hold_progress = (2.0 * self.lift_hold_counter.float()) / (T * (T + 1.0))
+            # Clamp to prevent tiny negative/extreme values, though counter is 0 to T
+            hold_progress = torch.clamp(hold_progress, min=0.0, max=2.0/T)
         else:
             hold_progress = torch.zeros(self.num_envs, device=self.device)
         
