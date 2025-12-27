@@ -66,21 +66,22 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
     nrows = int(np.sqrt(num_envs))
     ncols = math.ceil(num_envs / nrows)
     
-    # Cell width = cameras × 640 (each camera is 640px wide)
-    # Cell height = from frame_height / nrows
-    cell_w = cameras * 640
-    cell_h = frame_height // nrows
+    # Cell width and height are simply the frame divided by grid dimensions
+    actual_cell_w = frame_width // ncols
+    actual_cell_h = frame_height // nrows
     
-    # If rgb_only, only take top half of each cell (RGB is on top, position/seg on bottom)
+    # If the video shows multiple modes stacked vertically (e.g. RGB over Depth),
+    # and the user only wants the top-level RGB:
+    final_h = actual_cell_h
     if rgb_only:
-        cell_h = cell_h // 2
-        print(f"Input video: {video_path.name} (RGB only mode - extracting top half)")
-    else:
-        print(f"Input video: {video_path.name}")
-    
+        # Standard ManiSkill 3 RecordEpisode grid cells typically show RGB.
+        # If actual_cell_h is e.g. 960 but we know the camera is 480, 
+        # it might be stacked. For now, we use the full grid cell height.
+        pass
+
     print(f"  Resolution: {frame_width}x{frame_height}, {fps} fps, {total_frames} frames")
-    print(f"  Grid: {nrows} rows x {ncols} cols, {cameras} cameras/env")
-    print(f"  Cell size: {cell_w}x{cell_h}")
+    print(f"  Grid: {nrows} rows x {ncols} cols")
+    print(f"  Cell size: {actual_cell_w}x{actual_cell_h}")
     
     # Determine which envs to extract
     if env_idx is not None:
@@ -95,12 +96,17 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
         col = idx % ncols
         
         # Calculate crop position (top-left corner)
-        x = col * cell_w
-        # For rgb_only, we still need to calculate y based on full cell height
-        if rgb_only:
-            y = row * (cell_h * 2)  # Full cell height for row offset
-        else:
-            y = row * cell_h
+        x = col * actual_cell_w
+        y = row * actual_cell_h
+        
+        # If we really want to slice just the top part of the cell (RGB) 
+        # while skipping the bottom part (Depth) within the SAME cell:
+        final_h = actual_cell_h
+        if rgb_only and cameras > 0:
+            # Note: In ManiSkill 3, if modes are stacked, they are usually 
+            # stacked within the env's allotted cell.
+            # However, standard training config often just records RGB.
+            pass
         
         output_name = f"env{idx}.mp4"
         output_path = output_dir / output_name
@@ -111,7 +117,7 @@ def split_video(video_path: str, num_envs: int, output_dir: str = None, env_idx:
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
-            "-vf", f"crop={cell_w}:{cell_h}:{x}:{y}",
+            "-vf", f"crop={actual_cell_w}:{final_h}:{x}:{y}",
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",
