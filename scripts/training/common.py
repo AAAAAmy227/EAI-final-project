@@ -190,6 +190,11 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     if "obs" in cfg:
         obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True)
     
+    # Set custom robot URDF path if specified (before environment creation)
+    if "robot_urdf" in cfg.env:
+        from scripts.so101 import SO101
+        SO101.urdf_path = cfg.env.robot_urdf
+    
     env_kwargs = dict(
         task=cfg.env.task,
         control_mode=cfg.env.control_mode,
