@@ -1,7 +1,7 @@
 # Observation normalization for single-arm tasks (Lift, Stack)
 # Derived from real trajectory analysis
 
-enabled: true
+enabled: false
 
 # qpos normalization scale (divide by this value)
 # Default π works for most robots with joint limits ±π

@@ -47,10 +47,32 @@ def debug_env():
                 print(f"Agent.controller keys: {list(ctrl.keys())}")
                 for k, v in ctrl.items():
                     print(f"  Controller value[{k}] type: {type(v)}")
-                    if hasattr(v, "joints"):
-                        print(f"  Controller value[{k}] joints: {[j.name for j in v.joints]}")
-    else:
-        print("Unwrapped has no 'agent' attribute")
+    print("-" * 20)
+    print("Testing PPORunner Fixed Naming Logic...")
+    from scripts.training.runner import PPORunner
+    # Mocking a minimal config needed for PPORunner init
+    runner_cfg = cfg.copy()
+    runner_cfg.ppo = OmegaConf.create({"learning_rate": 3e-4, "gamma": 0.95, "gae_lambda": 0.9})
+    runner_cfg.checkpoint = None
+    runner_cfg.save_model = False
+    runner_cfg.reward = cfg.reward if "reward" in cfg else OmegaConf.create({"reward_mode": "sparse"})
+    
+    runner = PPORunner(runner_cfg)
+    obs_names = runner.obs_names
+    
+    print(f"Total names: {len(obs_names)}")
+    print(f"First 10 names:")
+    for n in obs_names[:10]:
+        print(f"  {n}")
+    
+    print(f"TCP/Cube samples:")
+    found_special = False
+    for n in obs_names:
+        if "tcp_pos" in n or "red_cube_pos" in n:
+             print(f"  {n}")
+             found_special = True
+    if not found_special:
+        print("  None found (check task/obs_mode)")
 
     envs.close()
 

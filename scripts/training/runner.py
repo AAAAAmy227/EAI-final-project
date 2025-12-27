@@ -113,7 +113,12 @@ class PPORunner:
         
         if cfg.checkpoint:
             print(f"Loading checkpoint from {cfg.checkpoint}")
-            self.agent.load_state_dict(torch.load(cfg.checkpoint))
+            ckpt = torch.load(cfg.checkpoint, map_location=self.device)
+            self.agent.load_state_dict(ckpt["agent"])
+            if self.normalize_obs and "obs_ema_mean" in ckpt:
+                self.obs_ema_mean.copy_(ckpt["obs_ema_mean"])
+                self.obs_ema_var.copy_(ckpt["obs_ema_var"])
+                print("Loaded observation normalization statistics from checkpoint.")
             if self.cudagraphs:
                 from_module(self.agent).data.to_module(self.agent_inference)
         
@@ -138,9 +143,10 @@ class PPORunner:
         # Handle timeout termination (if True, truncated episodes bootstrap)
         self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
         
-        # Observation statistics logging (for monitoring normalization quality)
+        # Observation statistics logging and normalization
         self.log_obs_stats = cfg.get("log_obs_stats", False)
-        if self.log_obs_stats:
+        self.normalize_obs = cfg.get("normalize_obs", False)
+        if self.log_obs_stats or self.normalize_obs:
             # EMA for mean/var (no accumulation overflow, smooth updates)
             self.obs_ema_tau = cfg.get("obs_stats_tau", 0.01)  # EMA decay rate from config
             self.obs_ema_mean = torch.zeros(self.n_obs, device=self.device)
@@ -150,16 +156,32 @@ class PPORunner:
             # Traverse wrappers to find the original Dict observation space
             curr_env = self.envs
             original_space = None
-            while hasattr(curr_env, "env"):
+            # ManiSkillVectorEnv -> RecordEpisode -> FlattenStateWrapper -> Track1Env
+            # We want to find the space before FlattenStateWrapper
+            while True:
                 if hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
                     original_space = curr_env.single_observation_space
+                    break
+                if not hasattr(curr_env, "env"):
                     break
                 curr_env = curr_env.env
             
             if original_space:
-                self.obs_names = self._get_obs_names(original_space)
+                self.obs_names, _ = self._get_obs_names(original_space)
             else:
-                self.obs_names = [f"obs_{i}" for i in range(self.n_obs)]
+                # Fallback: if we still can't find it, use the current single_observation_space
+                # which might be a flattened Box, but it's better than nothing.
+                self.obs_names, _ = self._get_obs_names(self.envs.single_observation_space)
+            
+            # Final verification: ensure obs_names length matches n_obs
+            if len(self.obs_names) != self.n_obs:
+                 print(f"Warning: obs_names count ({len(self.obs_names)}) does not match n_obs ({self.n_obs}). Using generic names.")
+                 self.obs_names = [f"obs_{i}" for i in range(self.n_obs)]
+            
+            # Initialize from config if requested
+            if cfg.get("init_obs_stats_from_config", False):
+                self._initialize_obs_stats_from_config()
+            
             print(f"Dynamic observation names for logging (count: {len(self.obs_names)})")
         
         # Reward mode for logging
@@ -248,24 +270,69 @@ class PPORunner:
             print("Applying CudaGraphModule to Policy (Inference Only)...")
             self.policy = CudaGraphModule(self.policy)
 
-    def _get_obs_names(self, space, prefix=""):
-        """Recursively get observation feature names from a space."""
+    def _get_obs_names(self, space, prefix="", global_idx=0):
+        """Recursively get observation feature names from a space with global indexing."""
         names = []
         if isinstance(space, gym.spaces.Dict):
             # Sort keys to match FlattenStateWrapper / _flatten_obs order
             for k in sorted(space.keys()):
                 new_prefix = f"{prefix}/{k}" if prefix else k
-                names.extend(self._get_obs_names(space[k], new_prefix))
+                sub_names, global_idx = self._get_obs_names(space[k], new_prefix, global_idx)
+                names.extend(sub_names)
         elif hasattr(space, "shape") and space.shape:
-            flat_size = np.prod(space.shape)
-            if flat_size > 1:
-                for i in range(flat_size):
-                    names.append(f"{prefix}_{i}")
-            else:
-                names.append(prefix)
+            flat_size = int(np.prod(space.shape))
+            for i in range(flat_size):
+                names.append(f"obs_{global_idx}_{prefix}_{i}")
+                global_idx += 1
         else:
-            names.append(prefix)
-        return names
+            names.append(f"obs_{global_idx}_{prefix}")
+            global_idx += 1
+        return names, global_idx
+
+    def _initialize_obs_stats_from_config(self):
+        """Initialize obs_ema_mean and obs_ema_var from environment config."""
+        if "obs" not in self.cfg:
+            return
+        obs_cfg = self.cfg.obs
+        print("Initializing observation statistics from config...")
+        
+        # Helper to find indices by name pattern
+        def get_indices(pattern):
+            return [i for i, name in enumerate(self.obs_names) if pattern in name]
+        
+        # Logic for common Track1 features
+        if "tcp_pos" in obs_cfg:
+            idxs = get_indices("tcp_pos")
+            if len(idxs) == 3:
+                self.obs_ema_mean[idxs] = torch.tensor(obs_cfg.tcp_pos.mean, device=self.device)
+                self.obs_ema_var[idxs] = torch.tensor(obs_cfg.tcp_pos.std, device=self.device) ** 2
+                print(f"  Initialized tcp_pos stats at indices {idxs}")
+        
+        if "red_cube_pos" in obs_cfg:
+            idxs = get_indices("red_cube_pos")
+            if len(idxs) == 3:
+                self.obs_ema_mean[idxs] = torch.tensor(obs_cfg.red_cube_pos.mean, device=self.device)
+                self.obs_ema_var[idxs] = torch.tensor(obs_cfg.red_cube_pos.std, device=self.device) ** 2
+                print(f"  Initialized red_cube_pos stats at indices {idxs}")
+        
+        # Dual arm: also check green_cube_pos or other objects if task is sort
+        if self.cfg.env.task == "sort":
+            for obj in ["green_cube_pos", "blue_cube_pos", "yellow_cube_pos"]:
+                if obj in obs_cfg:
+                    idxs = get_indices(obj)
+                    if len(idxs) == 3:
+                        self.obs_ema_mean[idxs] = torch.tensor(obs_cfg[obj].mean, device=self.device)
+                        self.obs_ema_var[idxs] = torch.tensor(obs_cfg[obj].std, device=self.device) ** 2
+                        print(f"  Initialized {obj} stats at indices {idxs}")
+
+    def _normalize_obs(self, obs):
+        """Apply running normalization to observations."""
+        if not self.normalize_obs:
+            return obs
+        # (obs - mean) / sqrt(var + eps)
+        normalized = (obs - self.obs_ema_mean) / torch.sqrt(self.obs_ema_var + 1e-8)
+        # Optional: Clip to avoid extreme values (as in common.NormalizeObservationGPU)
+        return torch.clamp(normalized, -10.0, 10.0)
 
     def _flatten_obs(self, obs):
         """Flatten dictionary observations into a single tensor."""
@@ -313,7 +380,9 @@ class PPORunner:
             
             # Inference (no gradients during rollout)
             with torch.no_grad():
-                action, logprob, _, value = self.policy(obs=obs)
+                # Apply normalization BEFORE inference
+                norm_obs = self._normalize_obs(obs)
+                action, logprob, _, value = self.policy(obs=norm_obs)
             storage["vals"][step] = value.flatten()
             storage["actions"][step] = action
             storage["logprobs"][step] = logprob
@@ -356,8 +425,8 @@ class PPORunner:
             # Accumulate episode returns
             self.episode_returns += reward
             
-            # Update observation EMA statistics (for monitoring normalization)
-            if self.log_obs_stats:
+            # Update observation EMA statistics (for monitoring AND normalization)
+            if self.log_obs_stats or self.normalize_obs:
                 # Compute batch mean and var
                 batch_mean = obs.mean(dim=0)
                 batch_var = obs.var(dim=0, unbiased=False)
@@ -436,7 +505,8 @@ class PPORunner:
             # - handle_timeout_termination=True: only terminated stops bootstrap (truncated continues)
             # - handle_timeout_termination=False: both stop bootstrap (CleanRL default)
             with torch.no_grad():
-                next_value = self.get_value(next_obs)
+                norm_next_obs = self._normalize_obs(next_obs)
+                next_value = self.get_value(norm_next_obs)
             
             advs, rets = self.gae_fn(
                 container["rewards"],
@@ -477,6 +547,10 @@ class PPORunner:
                 lr = self.optimizer.param_groups[0]["lr"]
                 if isinstance(lr, torch.Tensor):
                     lr = lr.item()
+                
+                pbar.set_description(
+                    f"SPS: {speed:.0f}, return: {avg_return:.2f}, lr: {lr:.2e}"
+                )
                 
                 # Compute explained variance
                 y_pred = container["vals"].flatten().cpu().numpy()
@@ -632,7 +706,9 @@ class PPORunner:
             # CRITICAL: Flatten obs like train does, otherwise agent gets wrong input format
             obs_flat = self._flatten_obs(eval_obs)
             with torch.no_grad():
-                eval_action = agent.get_action(obs_flat, deterministic=True)
+                # Normalize observations for inference
+                norm_obs_flat = self._normalize_obs(obs_flat)
+                eval_action = agent.get_action(norm_obs_flat, deterministic=True)
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
             episode_rewards += reward
@@ -759,9 +835,15 @@ class PPORunner:
         """Save model checkpoint."""
         if self.cfg.save_model:
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
-            model_path = output_dir / f"ckpt_{iteration}.pt"
-            torch.save(self.agent.state_dict(), model_path)
-            torch.save(self.agent.state_dict(), output_dir / "latest.pt")
+            model_path = output_dir / f"iteration_{iteration}.pt"
+            state = {
+                "agent": self.agent.state_dict(),
+                "obs_ema_mean": self.obs_ema_mean,
+                "obs_ema_var": self.obs_ema_var,
+            }
+            torch.save(state, model_path)
+            torch.save(state, output_dir / "latest.pt")
+            print(f"Model and stats saved to {model_path}")
 
     def _async_split_videos(self):
         """Asynchronously split tiled eval videos into individual env videos."""
