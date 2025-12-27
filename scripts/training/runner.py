@@ -184,7 +184,10 @@ class PPORunner:
             
             # Final verification: ensure obs_names length matches n_obs
             if len(self.obs_names) != self.n_obs:
-                 print(f"Warning: obs_names count ({len(self.obs_names)}) does not match n_obs ({self.n_obs}). Using generic names.")
+                 print(f"Warning: obs_names count ({len(self.obs_names)}) does not match n_obs ({self.n_obs}).")
+                 print(f"Expected {self.n_obs} from env.observation_space, but got {len(self.obs_names)} from get_obs_structure.")
+                 print(f"Structure names: {self.obs_names}")
+                 print("Falling back to generic naming: obs_0, obs_1, ...")
                  self.obs_names = [f"obs_{i}" for i in range(self.n_obs)]
             
             # Initialize from config if requested

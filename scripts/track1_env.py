@@ -114,58 +114,18 @@ class Track1Env(BaseEnv):
     def get_obs_structure(self):
         """The unbatched, hierarchical observation space for descriptive logging.
         
-        This method is used ONLY for descriptive logging/naming in the runner.
-        It does not replace the actual observation_space used for neural networks.
+        Dynamically derived from the actual observation dictionary to ensure parity.
         """
-        spaces = dict()
+        from mani_skill.utils import gym_utils
+        from mani_skill.utils import common as ms_common
         
-        # 1. Agent State (Joint positions and velocities)
-        agent_spaces = dict()
-        for agent in self.agent.agents:
-            if self.single_arm_mode and agent.uid == "so101-0":
-                 continue
-            agent_spaces[agent.uid] = gym.spaces.Dict({
-                "qpos": gym.spaces.Box(-np.inf, np.inf, (6,), np.float32),
-                "qvel": gym.spaces.Box(-np.inf, np.inf, (6,), np.float32),
-            })
-        spaces["agent"] = gym.spaces.Dict(agent_spaces)
+        # Call _get_obs_state_dict directly to get the hierarchical dictionary.
+        # super().get_obs() would return a flattened tensor in state mode.
+        obs_dict = self._get_obs_state_dict({})
         
-        # 2. Extra State
-        extra_spaces = dict()
-        extra_spaces["red_cube_rot"] = gym.spaces.Box(-np.inf, np.inf, (4,), np.float32)
-        if self.include_cube_displacement:
-            extra_spaces["red_cube_displacement"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-            
-        if self.green_cube is not None:
-            extra_spaces["green_cube_rot"] = gym.spaces.Box(-np.inf, np.inf, (4,), np.float32)
-            if self.include_cube_displacement:
-                 extra_spaces["green_cube_displacement"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-        
-        if self.include_is_grasped:
-            extra_spaces["is_grasped"] = gym.spaces.Box(-1, 1, (1,), np.float32)
-        if self.include_tcp_orientation:
-            extra_spaces["tcp_orientation"] = gym.spaces.Box(-np.inf, np.inf, (4,), np.float32)
-            
-        extra_spaces["tcp_to_red_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-        if self.task == "stack":
-            extra_spaces["red_to_green_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-            
-        # Absolute positions
-        abs_pos_list = self.include_abs_pos
-        if abs_pos_list is True:
-            abs_pos_list = ["tcp_pos", "red_cube_pos", "green_cube_pos"]
-        elif abs_pos_list in [False, None]:
-            abs_pos_list = []
-            
-        if "tcp_pos" in abs_pos_list:
-            extra_spaces["tcp_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-        if "red_cube_pos" in abs_pos_list:
-            extra_spaces["red_cube_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-        if "green_cube_pos" in abs_pos_list and self.green_cube is not None:
-            extra_spaces["green_cube_pos"] = gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)
-            
-        spaces["extra"] = gym.spaces.Dict(extra_spaces)
-        return gym.spaces.Dict(spaces)
+        # Convert to gym space (unbatched)
+        obs_numpy = ms_common.to_numpy(obs_dict)
+        return gym_utils.convert_observation_to_space(obs_numpy, unbatched=True)
         
     def _setup_reward_config(self, reward_config):
         """Setup reward configuration with defaults."""

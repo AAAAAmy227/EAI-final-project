@@ -82,10 +82,21 @@ def verify_names():
 
     # 3. Initialize Runner
     print("Initializing Runner...")
+    # Get original space as runner does
+    curr_env = envs
+    unwrapped = envs.unwrapped
+    struct_space = unwrapped.get_obs_structure()
+    print(f"Type of struct_space: {type(struct_space)}")
+    import gymnasium as gym
+    print(f"Is Dict space? {isinstance(struct_space, gym.spaces.Dict)}")
+
     runner = PPORunner(cfg)
     obs_names = runner.obs_names
     
     print(f"Generated observation names count: {len(obs_names)}")
+    print("Full list of names:")
+    for i, name in enumerate(obs_names):
+        print(f"  {i:2d}: {name}")
     
     # Check for mismatch
     if len(obs_names) != n_obs:
