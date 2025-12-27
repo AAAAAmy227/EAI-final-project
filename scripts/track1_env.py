@@ -1597,8 +1597,8 @@ class Track1Env(BaseEnv):
         # Cube starts at half_size height (0.015m for 3cm cube)
         cube_baseline_height = 0.015  # half_size of red cube
         lift_height = cube_height - cube_baseline_height
-        if self.lift_max_height is not None:
-            lift_reward = torch.clamp(lift_height, min=0.0, max=self.lift_max_height)
+        if self.lift_max_height is not None and self.lift_max_height > 0:
+            lift_reward = torch.clamp(lift_height, min=0.0, max=self.lift_max_height) / self.lift_max_height
         else:
             lift_reward = torch.clamp(lift_height, min=0.0)
         

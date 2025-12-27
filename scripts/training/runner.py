@@ -143,8 +143,8 @@ class PPORunner:
         if self.log_obs_stats:
             # EMA for mean/var (no accumulation overflow, smooth updates)
             self.obs_ema_tau = cfg.get("obs_stats_tau", 0.01)  # EMA decay rate from config
-            self.obs_ema_mean = torch.zeros(self.obs_dim, device=self.device)
-            self.obs_ema_var = torch.ones(self.obs_dim, device=self.device)
+            self.obs_ema_mean = torch.zeros(self.n_obs, device=self.device)
+            self.obs_ema_var = torch.ones(self.n_obs, device=self.device)
         
         # Reward mode for logging
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
@@ -291,8 +291,8 @@ class PPORunner:
             # Update observation EMA statistics (for monitoring normalization)
             if self.log_obs_stats:
                 # Compute batch mean and var
-                batch_mean = obs_flat.mean(dim=0)
-                batch_var = obs_flat.var(dim=0, unbiased=False)
+                batch_mean = obs.mean(dim=0)
+                batch_var = obs.var(dim=0, unbiased=False)
                 # EMA update (lerp_ is in-place, no new tensor allocation)
                 self.obs_ema_mean.lerp_(batch_mean, self.obs_ema_tau)
                 self.obs_ema_var.lerp_(batch_var, self.obs_ema_tau)
