@@ -1433,7 +1433,8 @@ class Track1Env(BaseEnv):
                 (red_pos[:, 1] < self.fail_bounds["y_min"]) |
                 (red_pos[:, 1] > self.fail_bounds["y_max"])
             )
-            fail = fail | out_of_bounds
+            # Only fail on out_of_bounds if NOT grasping (allow moving cube while grasped)
+            fail = fail | (out_of_bounds & (~is_grasped))
             
         # Ensure success is False if already failed
         success = success & (~fail)
