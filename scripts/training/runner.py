@@ -260,16 +260,23 @@ class PPORunner:
                 for k, v in reward_comps.items():
                     self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + v
                 self.reward_component_count += 1
-            # Accumulate success/fail counts
-            # On auto_reset, ManiSkillVectorEnv moves original info to 'final_info'
-            # Check both locations to capture counts from both regular and reset steps
             # Accumulate success/fail counts on GPU (no sync until logging)
+            # Check both top-level and final_info (ManiSkill moves info there on auto_reset)
+            success_val = None
+            fail_val = None
             if "success_count" in infos:
-                val = infos["success_count"]
-                self.success_count += val if isinstance(val, torch.Tensor) else val
+                success_val = infos["success_count"]
+            elif "final_info" in infos and "success_count" in infos["final_info"]:
+                success_val = infos["final_info"]["success_count"]
             if "fail_count" in infos:
-                val = infos["fail_count"]
-                self.fail_count += val if isinstance(val, torch.Tensor) else val
+                fail_val = infos["fail_count"]
+            elif "final_info" in infos and "fail_count" in infos["final_info"]:
+                fail_val = infos["final_info"]["fail_count"]
+            
+            if success_val is not None:
+                self.success_count += success_val if isinstance(success_val, torch.Tensor) else success_val
+            if fail_val is not None:
+                self.fail_count += fail_val if isinstance(fail_val, torch.Tensor) else fail_val
             next_obs_flat = self._flatten_obs(next_obs)
             # Accumulate episode returns
             self.episode_returns += reward
