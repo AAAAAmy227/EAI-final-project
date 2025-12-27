@@ -475,8 +475,8 @@ class PPORunner:
                         # Wait for previous eval to finish before starting new one
                         self.eval_thread.join()
                     
-                    # Snapshot model weights for eval (deep copy to avoid race conditions)
-                    self.eval_agent_snapshot = copy.deepcopy(self.agent.state_dict())
+                    # Copy current weights to separate eval_agent (no race condition)
+                    self.eval_agent.load_state_dict(self.agent.state_dict())
                     
                     # Launch async eval
                     self.eval_thread = threading.Thread(
@@ -505,8 +505,15 @@ class PPORunner:
         self.eval_envs.close()
         print("Training complete!")
 
-    def _evaluate(self):
-        """Run evaluation episodes."""
+    def _evaluate(self, agent=None):
+        """Run evaluation episodes.
+        
+        Args:
+            agent: Agent to use for evaluation. Defaults to self.agent.
+                   For async eval, pass self.eval_agent to avoid race conditions.
+        """
+        if agent is None:
+            agent = self.agent
         print("Running evaluation...")
         
         # Optimization: Instead of recreating env, flush the video wrapper state
@@ -524,8 +531,7 @@ class PPORunner:
         eval_component_count = 0
         
         # Per-step reward data for CSV export (list of dicts per env)
-        # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}
-        step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
+        # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}\n        step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
         
         # Compute max_steps consistently: (base * multiplier) + hold_steps
         base = self.cfg.env.episode_steps.get("base", 296)
@@ -543,7 +549,7 @@ class PPORunner:
         
         for step in range(max_steps):
             with torch.no_grad():
-                eval_action = self.agent.get_action(eval_obs, deterministic=True)
+                eval_action = agent.get_action(eval_obs, deterministic=True)
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
             episode_rewards += reward
@@ -640,23 +646,16 @@ class PPORunner:
     def _evaluate_async(self, iteration):
         """Run evaluation asynchronously in a background thread.
         
-        Uses a separate CUDA stream and model snapshot to avoid blocking training.
+        Uses a separate CUDA stream and a dedicated eval_agent to avoid
+        race conditions with the training agent.
         """
         eval_start = time.time()
         
         # Run all CUDA operations on a separate stream
         with torch.cuda.stream(self.eval_stream):
-            # Create a temporary agent with snapshot weights for eval
-            # We use the same agent object but load snapshot weights
-            original_state = self.agent.state_dict()
-            self.agent.load_state_dict(self.eval_agent_snapshot)
-            
-            try:
-                # Run the actual evaluation
-                self._evaluate()
-            finally:
-                # Restore original weights after eval
-                self.agent.load_state_dict(original_state)
+            # Use eval_agent (which has a copy of weights from when eval was triggered)
+            # This is completely isolated from self.agent, no race conditions
+            self._evaluate(agent=self.eval_agent)
         
         # Sync this stream before logging (ensure eval is complete)
         self.eval_stream.synchronize()
