@@ -158,11 +158,20 @@ class PPORunner:
         # Observation statistics logging and normalization
         self.log_obs_stats = cfg.get("log_obs_stats", False)
         self.normalize_obs = cfg.get("normalize_obs", False)
+        self.obs_clip = cfg.get("obs_clip", 10.0)  # Clip normalized obs to [-clip, clip]
         if self.log_obs_stats or self.normalize_obs:
-            # EMA for mean/var (no accumulation overflow, smooth updates)
-            self.obs_ema_tau = cfg.get("obs_stats_tau", 0.01)  # EMA decay rate from config
+            # Online RunningMeanStd (Welford's algorithm) - standard approach like VecNormalize
+            # This computes global running mean/var over all samples seen
+            self.obs_rms_mean = torch.zeros(self.n_obs, device=self.device)
+            self.obs_rms_var = torch.ones(self.n_obs, device=self.device)
+            self.obs_rms_count = torch.tensor(1e-4, device=self.device)  # Small epsilon to avoid div by zero
+            
+            # Optional: EMA for additional monitoring (not used for normalization)
+            self.obs_ema_tau = cfg.get("obs_stats_tau", 0.01)
             self.obs_ema_mean = torch.zeros(self.n_obs, device=self.device)
             self.obs_ema_var = torch.ones(self.n_obs, device=self.device)
+            
+            print(f"Running Observation Normalization enabled (clip={self.obs_clip})")
             
             # Fetch observation names for granular logging
             # Traverse wrappers to find the original Dict observation space
@@ -350,13 +359,13 @@ class PPORunner:
                         print(f"  Initialized {obj} stats at indices {idxs}")
 
     def _normalize_obs(self, obs):
-        """Apply running normalization to observations."""
+        """Apply running normalization to observations using online RunningMeanStd."""
         if not self.normalize_obs:
             return obs
-        # (obs - mean) / sqrt(var + eps)
-        normalized = (obs - self.obs_ema_mean) / torch.sqrt(self.obs_ema_var + 1e-8)
-        # Optional: Clip to avoid extreme values (as in common.NormalizeObservationGPU)
-        return torch.clamp(normalized, -10.0, 10.0)
+        # (obs - mean) / sqrt(var + eps) - standard VecNormalize approach
+        normalized = (obs - self.obs_rms_mean) / torch.sqrt(self.obs_rms_var + 1e-8)
+        # Clip to avoid extreme values
+        return torch.clamp(normalized, -self.obs_clip, self.obs_clip)
 
     def _normalize_reward(self, reward, done):
         """Apply running reward normalization (like gym.wrappers.NormalizeReward).
@@ -505,12 +514,28 @@ class PPORunner:
             # Accumulate episode returns
             self.episode_returns += reward
             
-            # Update observation EMA statistics (for monitoring AND normalization)
+            # Update observation statistics using Welford's online algorithm (for monitoring AND normalization)
             if self.log_obs_stats or self.normalize_obs:
                 # Compute batch mean and var
                 batch_mean = obs.mean(dim=0)
                 batch_var = obs.var(dim=0, unbiased=False)
-                # EMA update (lerp_ is in-place, no new tensor allocation)
+                batch_count = obs.shape[0]
+                
+                # Welford's online algorithm (parallel variance update)
+                delta = batch_mean - self.obs_rms_mean
+                total_count = self.obs_rms_count + batch_count
+                
+                # Update running mean
+                self.obs_rms_mean = self.obs_rms_mean + delta * batch_count / total_count
+                
+                # Update running variance using parallel formula (Chan et al.)
+                m_a = self.obs_rms_var * self.obs_rms_count
+                m_b = batch_var * batch_count
+                M2 = m_a + m_b + delta ** 2 * self.obs_rms_count * batch_count / total_count
+                self.obs_rms_var = M2 / total_count
+                self.obs_rms_count = total_count
+                
+                # Also update EMA for optional comparison (faster adaptation tracking)
                 self.obs_ema_mean.lerp_(batch_mean, self.obs_ema_tau)
                 self.obs_ema_var.lerp_(batch_var, self.obs_ema_tau)
             
@@ -674,19 +699,38 @@ class PPORunner:
                     self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)
                 
                 # Log observation statistics (for monitoring normalization quality)
-                # Ideal: mean ≈ 0, std ≈ 1 indicates good normalization
+                # Ideal: normalized mean ≈ 0, std ≈ 1 indicates good normalization
                 if self.log_obs_stats:
-                    obs_std = torch.sqrt(torch.clamp(self.obs_ema_var, min=1e-8))
+                    obs_rms_std = torch.sqrt(torch.clamp(self.obs_rms_var, min=1e-8))
                     
-                    # Log overall summary statistics
-                    logs["obs/mean_avg"] = self.obs_ema_mean.mean().item()
-                    logs["obs/std_avg"] = obs_std.mean().item()
+                    # Log RunningMeanStd statistics (used for normalization)
+                    logs["obs_norm/rms_mean_avg"] = self.obs_rms_mean.mean().item()
+                    logs["obs_norm/rms_std_avg"] = obs_rms_std.mean().item()
+                    logs["obs_norm/rms_count"] = self.obs_rms_count.item()
                     
-                    # Log granular per-feature EMA statistics
+                    # Log raw observation stats (from this rollout, before normalization)
+                    raw_obs = container["obs"]  # [num_steps, num_envs, n_obs]
+                    raw_mean = raw_obs.mean(dim=(0, 1))  # [n_obs]
+                    raw_std = raw_obs.std(dim=(0, 1))    # [n_obs]
+                    logs["obs_raw/mean_avg"] = raw_mean.mean().item()
+                    logs["obs_raw/std_avg"] = raw_std.mean().item()
+                    logs["obs_raw/min"] = raw_obs.min().item()
+                    logs["obs_raw/max"] = raw_obs.max().item()
+                    
+                    # Log normalized observation stats (after normalization)
+                    if self.normalize_obs:
+                        norm_obs = (raw_obs - self.obs_rms_mean) / obs_rms_std
+                        norm_obs_clipped = torch.clamp(norm_obs, -self.obs_clip, self.obs_clip)
+                        logs["obs_normalized/mean_avg"] = norm_obs_clipped.mean().item()
+                        logs["obs_normalized/std_avg"] = norm_obs_clipped.std().item()
+                        logs["obs_normalized/min"] = norm_obs_clipped.min().item()
+                        logs["obs_normalized/max"] = norm_obs_clipped.max().item()
+                    
+                    # Log per-feature statistics (using RunningMeanStd, more accurate than EMA)
                     for i, name in enumerate(self.obs_names):
-                        if i < len(self.obs_ema_mean):
-                            logs[f"obs_mean_ema/{name}"] = self.obs_ema_mean[i].item()
-                            logs[f"obs_std_ema/{name}"] = obs_std[i].item()
+                        if i < len(self.obs_rms_mean):
+                            logs[f"obs_rms_mean/{name}"] = self.obs_rms_mean[i].item()
+                            logs[f"obs_rms_std/{name}"] = obs_rms_std[i].item()
                 
                 # Log per-joint action std (for monitoring policy convergence)
                 with torch.no_grad():
