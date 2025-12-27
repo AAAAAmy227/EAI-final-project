@@ -8,12 +8,16 @@ reward_type: "parallel"
 weights:
   approach: 20.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
   grasp: 100.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
+  grasp_hold: 50.0       # Reward for stable grasp, grows linearly with consecutive grasp steps
   horizontal_displacement: -1.0  # Penalize cube XY displacement from initial position
   lift: 50.0           # Lift cube up (height in meters, scaled up)
   hold_progress: 50.0  # Reward for holding cube at lift_target height, proportional to hold time (0~1)
   action_rate: -0.1   # Penalize action changes (anti-jitter), range ~[0, 0.2]
   success: 100.0        # Task completion bonus
   fail: -100.0         # Penalty when cube goes out of bounds
+
+# Grasp hold settings: reward stability of grasp
+grasp_hold_max_steps: 100  # Steps to reach full reward (1 second at 30Hz)
 
 # Adaptive grasp weight: dynamically scale grasp reward by inverse success rate
 # Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha

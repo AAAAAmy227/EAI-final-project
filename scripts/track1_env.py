@@ -143,11 +143,15 @@ class Track1Env(BaseEnv):
             "horizontal_displacement": weights.get("horizontal_displacement", 0.0),
             "lift": weights.get("lift", 5.0),
             "hold_progress": weights.get("hold_progress", 0.0),
+            "grasp_hold": weights.get("grasp_hold", 0.0),
             "success": weights.get("success", 10.0),
             # Legacy (for backward compatibility)
             "reach": weights.get("reach", weights.get("approach", 1.0)),
             "grasp": weights.get("grasp", 0.0),
         }
+        
+        # Grasp hold settings
+        self.grasp_hold_max_steps = reward_config.get("grasp_hold_max_steps", 30)
         
         # Approach reward curve type: "linear" (piecewise) or "tanh"
         self.approach_curve = reward_config.get("approach_curve", "linear")
@@ -1794,6 +1798,32 @@ class Track1Env(BaseEnv):
         )
         grasp_reward = is_grasped.float()  # 0 or 1
         
+        # 8.5 Grasp hold reward: reward for stable continuous grasp
+        # Similar to hold_progress but for grasping (not necessarily lifting)
+        # R_t = 2 * counter / (T * (T + 1)), ensuring sum over T steps is 1.0 * weight
+        if hasattr(self, 'grasp_hold_max_steps') and self.grasp_hold_max_steps > 0:
+            if not hasattr(self, 'grasp_hold_counter'):
+                self.grasp_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+            
+            # Increment counter when grasping, reset otherwise
+            self.grasp_hold_counter = torch.where(
+                is_grasped,
+                self.grasp_hold_counter + 1,
+                torch.zeros_like(self.grasp_hold_counter)
+            )
+            
+            # Cap counter at max_steps to maintain constant reward after max duration
+            # Once reached max_steps, the reward becomes constant (2/(T+1)) ≈ 2/T
+            # wait, if we cap the counter, the formula 2*counter/(T*(T+1)) will also be capped.
+            # But the requirement is likely to reward *holding*.
+            # Let's use the same normalized quadratic formula as hold_progress.
+            
+            current_count = torch.clamp(self.grasp_hold_counter, max=self.grasp_hold_max_steps)
+            T = float(self.grasp_hold_max_steps)
+            grasp_hold_reward = (2.0 * current_count.float()) / (T * (T + 1.0))
+        else:
+            grasp_hold_reward = torch.zeros(self.num_envs, device=self.device)
+        
         # Adaptive grasp weight: scale by inverse success rate
         if self.adaptive_grasp_enabled:
             # Lazy initialization of grasp_success_rate (device not available in __init__)
@@ -1854,6 +1884,7 @@ class Track1Env(BaseEnv):
         reward = (w["approach"] * approach_reward +
                   w["approach"] * approach2_reward +  # Same weight as approach in dual_point mode
                   dynamic_grasp_weight * grasp_reward +
+                  w.get("grasp_hold", 0.0) * grasp_hold_reward +  # New grasp hold reward
                   w["horizontal_displacement"] * horizontal_displacement +
                   dynamic_lift_weight * effective_lift_reward + 
                   w.get("hold_progress", 0.0) * effective_hold_progress +
@@ -1866,6 +1897,7 @@ class Track1Env(BaseEnv):
         info["reward_components"] = {
             "approach": (w["approach"] * approach_reward).mean(),
             "grasp": (dynamic_grasp_weight * grasp_reward).mean(),
+            "grasp_hold": (w.get("grasp_hold", 0.0) * grasp_hold_reward).mean(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
             "lift": (dynamic_lift_weight * effective_lift_reward).mean(),
             "hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress).mean(),
