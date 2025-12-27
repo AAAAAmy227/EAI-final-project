@@ -65,6 +65,10 @@ class Track1Env(BaseEnv):
         self.tcp_pos_norm = obs_normalization.get("tcp_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
         self.red_cube_pos_norm = obs_normalization.get("red_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
         self.green_cube_pos_norm = obs_normalization.get("green_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
+        # Include is_grasped in observations (0/1 -> -1/1)
+        self.include_is_grasped = obs_normalization.get("include_is_grasped", False)
+        # Include TCP orientation (quaternion)
+        self.include_tcp_orientation = obs_normalization.get("include_tcp_orientation", False)
 
         self.render_scale = render_scale
         
@@ -659,8 +663,29 @@ class Track1Env(BaseEnv):
             green_cube_pos = self.green_cube.pose.p
             obs["green_cube_rot"] = self.green_cube.pose.q
 
-        # 2. End-Effector (TCP) State (Right Arm)
-        tcp_pos = self._get_gripper_pos()
+        # 2. End-Effector (TCP) State (Right Arm) - using agent.tcp_pos (fingertip midpoint)
+        # For single-arm tasks, use right arm (so101-1)
+        if hasattr(self, 'single_arm_mode') and self.single_arm_mode:
+            agent = self.agent.agents["so101-1"]
+        else:
+            agent = self.agent if not hasattr(self.agent, 'agents') else self.agent.agents.get("so101-1", self.agent)
+        
+        tcp_pos = agent.tcp_pos  # Uses new fingertip-based calculation
+        tcp_pose = agent.tcp_pose
+        
+        # 2a. is_grasped observation (optional, config controlled)
+        if self.include_is_grasped:
+            is_grasped = agent.is_grasping(
+                self.red_cube, 
+                min_force=self.grasp_min_force, 
+                max_angle=self.grasp_max_angle
+            )
+            # Convert bool to -1/1 for better neural network input
+            obs["is_grasped"] = is_grasped.float() * 2 - 1
+        
+        # 2b. TCP orientation (quaternion, optional)
+        if self.include_tcp_orientation:
+            obs["tcp_orientation"] = tcp_pose.q
         
         # 3. Relative State (Critical for RL efficiency)
         # TCP to Red Cube - apply clip + normalize

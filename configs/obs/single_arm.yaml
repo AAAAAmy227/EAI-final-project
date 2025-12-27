@@ -41,3 +41,9 @@ red_cube_pos:
   mean: [0.479, 0.25, 0.03]
   std: [0.083, 0.082, 0.03]
   clip_with_std: 1.5
+
+# Include is_grasped in observations (0/1 converted to -1/1)
+include_is_grasped: true
+
+# Include TCP orientation (quaternion, 4 values) in observations
+include_tcp_orientation: true
