@@ -1383,27 +1383,38 @@ class Track1Env(BaseEnv):
         return {}
 
     def _evaluate_lift(self):
-        """Lift: red cube >= lift_target for stable_hold_time seconds.
+        """Lift: red cube >= lift_target AND is_grasped for stable_hold_time seconds.
         
-        If stable_hold_time=0, success is instant (cube just needs to be above threshold).
-        Otherwise, cube must stay above threshold for stable_hold_steps consecutive steps.
+        If stable_hold_time=0, success is instant (cube just needs to be above threshold while grasped).
+        Otherwise, cube must stay above threshold AND grasped for stable_hold_steps consecutive steps.
         """
         red_z = self.red_cube.pose.p[:, 2]
         is_above = red_z >= self.lift_target
         
+        # Check if currently grasping the cube
+        agent = self.right_arm
+        is_grasped = agent.is_grasping(
+            self.red_cube,
+            min_force=self.grasp_min_force,
+            max_angle=self.grasp_max_angle
+        )
+        
+        # Valid hold: cube is above target AND is being grasped
+        is_valid_hold = is_above & is_grasped
+        
         if self.stable_hold_steps <= 0:
             # Instant success mode (backward compatible)
-            success = is_above
+            success = is_valid_hold
         else:
-            # Stable hold mode: increment counter when above, reset when below
+            # Stable hold mode: increment counter when valid, reset otherwise
             if not hasattr(self, 'lift_hold_counter'):
                 self.lift_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
             
-            # Increment counter where above threshold
+            # Increment counter only when both above AND grasped
             self.lift_hold_counter = torch.where(
-                is_above,
+                is_valid_hold,
                 self.lift_hold_counter + 1,
-                torch.zeros_like(self.lift_hold_counter)  # Reset if below
+                torch.zeros_like(self.lift_hold_counter)  # Reset if not valid
             )
             
             # Success when counter reaches required hold steps
