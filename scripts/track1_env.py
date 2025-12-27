@@ -258,6 +258,17 @@ class Track1Env(BaseEnv):
         self.adaptive_lift_tau = adaptive_lift_cfg.get("tau", 0.01)     # EMA decay for tracking
         # EMA of lift success rate (initialized lazily when device is available)
         self.lift_success_rate = None
+        
+        # Adaptive success weight: scale by inverse success rate (same logic as grasp/lift)
+        # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
+        adaptive_success_cfg = reward_config.get("adaptive_success_weight", {})
+        self.adaptive_success_enabled = adaptive_success_cfg.get("enabled", False)
+        self.adaptive_success_alpha = adaptive_success_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
+        self.adaptive_success_eps = adaptive_success_cfg.get("eps", 0.01)     # Floor for success rate
+        self.adaptive_success_max = adaptive_success_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
+        self.adaptive_success_tau = adaptive_success_cfg.get("tau", 0.01)     # EMA decay for tracking
+        # EMA of task success rate (initialized lazily when device is available)
+        self.task_success_rate = None
 
     def _setup_single_arm_action_space(self):
         """For lift/stack tasks, only expose right arm action space."""
@@ -1726,6 +1737,25 @@ class Track1Env(BaseEnv):
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
         
+        # Adaptive success weight: scale by inverse success rate
+        if self.adaptive_success_enabled:
+            # Lazy initialization
+            if self.task_success_rate is None:
+                self.task_success_rate = torch.tensor(self.adaptive_success_eps, device=self.device)
+            
+            # Update EMA of task success rate
+            batch_success_rate = success_bonus.mean()
+            self.task_success_rate = self.task_success_rate * (1 - self.adaptive_success_tau) + batch_success_rate * self.adaptive_success_tau
+            
+            # Compute dynamic weight: base * (1 / rate)^alpha, capped at max
+            dynamic_success_weight = w.get("success", 0.0) * torch.pow(
+                1.0 / (self.task_success_rate + self.adaptive_success_eps),
+                self.adaptive_success_alpha
+            )
+            dynamic_success_weight = torch.clamp(dynamic_success_weight, max=self.adaptive_success_max)
+        else:
+            dynamic_success_weight = w.get("success", 0.0)
+        
         # 7. Fail penalty: cube out of bounds or fallen
         fail = info.get("fail", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         fail_penalty = fail.float()
@@ -1797,7 +1827,7 @@ class Track1Env(BaseEnv):
                   w["horizontal_displacement"] * horizontal_displacement +
                   dynamic_lift_weight * effective_lift_reward + 
                   w.get("action_rate", 0.0) * action_rate +
-                  w["success"] * success_bonus +
+                  dynamic_success_weight * success_bonus +
                   w["fail"] * fail_penalty)
         
         # Store reward components for logging (keep as GPU tensors to avoid sync)
@@ -1817,6 +1847,10 @@ class Track1Env(BaseEnv):
         if self.adaptive_lift_enabled:
             info["reward_components"]["lift_dynamic_weight"] = dynamic_lift_weight
             info["reward_components"]["lift_success_rate"] = self.lift_success_rate
+        # Log adaptive success weight metrics if enabled
+        if self.adaptive_success_enabled:
+            info["reward_components"]["success_dynamic_weight"] = dynamic_success_weight
+            info["reward_components"]["success_rate"] = self.task_success_rate
         # Only log approach2 in dual_point mode
         if self.approach_mode == "dual_point":
             info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean()

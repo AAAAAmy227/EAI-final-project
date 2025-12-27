@@ -38,6 +38,16 @@ adaptive_lift_weight:
   max_weight: 10000.0    # Cap to prevent weight explosion
   tau: 0.01             # EMA decay rate for tracking success rate
 
+# Adaptive success weight: dynamically scale success bonus by inverse success rate
+# Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
+# This boosts rare success events to provide stronger learning signal
+adaptive_success_weight:
+  enabled: true         # Enable adaptive weighting
+  alpha: 0.9            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
+  eps: 1e-8             # Floor for success rate to prevent division by zero
+  max_weight: 10000.0    # Cap to prevent weight explosion
+  tau: 0.01             # EMA decay rate for tracking success rate
+
 # Approach reward curve configuration
 # approach_curve options:
 #   - "linear": Piecewise linear (1.0 if d<threshold, linear decay to 0 at zero_point)
