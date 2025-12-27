@@ -142,6 +142,7 @@ class Track1Env(BaseEnv):
             "approach": weights.get("approach", weights.get("reach", 1.0)),
             "horizontal_displacement": weights.get("horizontal_displacement", 0.0),
             "lift": weights.get("lift", 5.0),
+            "hold_progress": weights.get("hold_progress", 0.0),
             "success": weights.get("success", 10.0),
             # Legacy (for backward compatibility)
             "reach": weights.get("reach", weights.get("approach", 1.0)),
@@ -1733,6 +1734,17 @@ class Track1Env(BaseEnv):
         else:
             action_rate = torch.zeros(self.num_envs, device=self.device)
         
+        # 5.5 Hold progress reward: proportional to hold time at lift_target height
+        # hold_progress = hold_counter / stable_hold_steps, capped at 1.0
+        # Only computed when stable_hold_steps > 0 and cube is above lift_target
+        if self.stable_hold_steps > 0 and hasattr(self, 'lift_hold_counter'):
+            hold_progress = torch.clamp(
+                self.lift_hold_counter.float() / self.stable_hold_steps,
+                min=0.0, max=1.0
+            )
+        else:
+            hold_progress = torch.zeros(self.num_envs, device=self.device)
+        
         # 6. Success bonus: cube lifted above threshold for stable_hold_time
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
@@ -1819,6 +1831,12 @@ class Track1Env(BaseEnv):
         else:
             dynamic_lift_weight = w.get("lift", 0.0)
         
+        # 11. Apply gated hold_progress reward (only when grasping)
+        if self.gate_lift_with_grasp:
+            effective_hold_progress = hold_progress * is_grasped.float()
+        else:
+            effective_hold_progress = hold_progress
+        
         # Weighted sum (use negative weights for penalties)
         # In dual_point mode, approach weight is used for both approach and approach2
         reward = (w["approach"] * approach_reward +
@@ -1826,6 +1844,7 @@ class Track1Env(BaseEnv):
                   dynamic_grasp_weight * grasp_reward +
                   w["horizontal_displacement"] * horizontal_displacement +
                   dynamic_lift_weight * effective_lift_reward + 
+                  w.get("hold_progress", 0.0) * effective_hold_progress +
                   w.get("action_rate", 0.0) * action_rate +
                   dynamic_success_weight * success_bonus +
                   w["fail"] * fail_penalty)
@@ -1837,6 +1856,7 @@ class Track1Env(BaseEnv):
             "grasp": (dynamic_grasp_weight * grasp_reward).mean(),
             "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
             "lift": (dynamic_lift_weight * effective_lift_reward).mean(),
+            "hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress).mean(),
             "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
         }
         # Log adaptive grasp weight metrics if enabled
