@@ -19,7 +19,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     """PPO Agent with actor-critic architecture (LeanRL-style)."""
     
-    def __init__(self, n_obs: int, n_act: int, device=None):
+    def __init__(self, n_obs: int, n_act: int, device=None, logstd_init: float = 0.0):
         super().__init__()
         self.critic = nn.Sequential(
             layer_init(nn.Linear(n_obs, 256, device=device)),
@@ -34,8 +34,9 @@ class Agent(nn.Module):
             layer_init(nn.Linear(256, 256, device=device)),
             nn.Tanh(),
             layer_init(nn.Linear(256, n_act, device=device), std=0.01),
+            nn.Tanh(),
         )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, n_act, device=device))
+        self.actor_logstd = nn.Parameter(torch.ones(1, n_act, device=device) * logstd_init)
 
     def get_value(self, x):
         """Get value estimate for observations."""

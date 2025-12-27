@@ -91,12 +91,13 @@ class PPORunner:
         print(f"n_obs: {self.n_obs}, n_act: {self.n_act}")
         
         # Agent setup
-        self.agent = Agent(self.n_obs, self.n_act, device=self.device)
+        logstd_init = cfg.ppo.get("logstd_init", 0.0)
+        self.agent = Agent(self.n_obs, self.n_act, device=self.device, logstd_init=logstd_init)
         
         # Create inference agent only when using CudaGraphModule
         # (CudaGraph captures weights, so we need a separate copy for inference)
         if self.cudagraphs:
-            self.agent_inference = Agent(self.n_obs, self.n_act, device=self.device)
+            self.agent_inference = Agent(self.n_obs, self.n_act, device=self.device, logstd_init=logstd_init)
             from_module(self.agent).data.to_module(self.agent_inference)
         else:
             self.agent_inference = None  # Not needed without CudaGraph
@@ -476,6 +477,7 @@ class PPORunner:
                         self.eval_thread.join()
                     
                     # Copy current weights to separate eval_agent (no race condition)
+                    # Note: We don't bother syncing logstd_init here as eval_agent is just for inference
                     self.eval_agent.load_state_dict(self.agent.state_dict())
                     
                     # Launch async eval
@@ -530,8 +532,8 @@ class PPORunner:
         eval_reward_components = {}
         eval_component_count = 0
         
-        # Per-step reward data for CSV export (list of dicts per env)
-        # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}\n        step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
+        # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}
+        step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
         
         # Compute max_steps consistently: (base * multiplier) + hold_steps
         base = self.cfg.env.episode_steps.get("base", 296)
@@ -577,8 +579,10 @@ class PPORunner:
                         "reward": reward[env_idx].item(),
                     }
                     # Add each reward component
-                    for k, v in eval_infos["reward_components"].items():
-                        step_data[k] = v  # These are already averaged across envs
+                    for k, v in reward_comps.items():
+                        # Handle GPU tensors
+                        val = v.item() if hasattr(v, 'item') else v
+                        step_data[k] = val
                     step_reward_data[env_idx].append(step_data)
             
             # Check for episode completion

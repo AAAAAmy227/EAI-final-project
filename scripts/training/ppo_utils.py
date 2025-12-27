@@ -75,6 +75,11 @@ def make_ppo_update_fn(agent, optimizer, cfg):
     
     def update(obs, actions, logprobs, advantages, returns, vals):
         optimizer.zero_grad(set_to_none=True)
+        
+        # Clamp logstd to prevent policy collapse (standard practice in stable RL)
+        with torch.no_grad():
+            agent.actor_logstd.clamp_(cfg.ppo.get("logstd_min", -5.0), cfg.ppo.get("logstd_max", 2.0))
+            
         _, newlogprob, entropy, newvalue = agent.get_action_and_value(obs, actions)
         logratio = newlogprob - logprobs
         ratio = logratio.exp()

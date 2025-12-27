@@ -11,6 +11,7 @@ converted_docs/
 *.mp4
 .vscode/
 .idea/
+*.log
 eai-dataset/
 ManiSkill-main/
 eai-2025-fall-final-project-reference-scripts/

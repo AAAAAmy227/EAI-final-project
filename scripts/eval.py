@@ -158,7 +158,18 @@ class EvalRunner:
             # CRITICAL: Flatten obs like train does
             obs_flat = self._flatten_obs(eval_obs)
             with torch.no_grad():
-                eval_action = self.agent.get_action(obs_flat, deterministic=True)
+                eval_action = self.agent.get_action(obs_flat, deterministic=False)
+            
+            if step == 0:
+                print("\n" + "-"*30)
+                print(f"DEBUG Step 0:")
+                print(f"Obs min/max/mean: {obs_flat.min().item():.4f} / {obs_flat.max().item():.4f} / {obs_flat.mean().item():.4f}")
+                print(f"Action min/max/mean: {eval_action.min().item():.4f} / {eval_action.max().item():.4f} / {eval_action.mean().item():.4f}")
+                # Print first 10 values of first env's obs
+                print(f"Obs[0, :10]: {obs_flat[0, :10]}")
+                print(f"Action[0]: {eval_action[0]}")
+                print("-"*30 + "\n")
+                
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
             episode_rewards += reward

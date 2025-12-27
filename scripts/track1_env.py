@@ -619,9 +619,10 @@ class Track1Env(BaseEnv):
                         
                         # Normalize by action bounds if available, otherwise fall back to qpos_scale
                         if self.obs_action_bounds is not None:
-                            # Convert dict to tensor in joint order
-                            joint_order = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
-                            bounds_list = [self.obs_action_bounds.get(j, 0.1) for j in joint_order]
+                            # Dynamically get joint order from robot to avoid scrambling
+                            active_joints = self.right_arm.robot.get_active_joints()
+                            joint_names = [j.name for j in active_joints]
+                            bounds_list = [self.obs_action_bounds.get(j, 0.1) for j in joint_names]
                             bounds = torch.tensor(bounds_list, device=self.device)
                             agent_obs["controller"]["target_qpos"] = tracking_error / bounds
                         else:
