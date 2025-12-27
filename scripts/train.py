@@ -56,6 +56,7 @@ def main(cfg: DictConfig):
             tags=[cfg.env.task, cfg.reward.reward_mode if "reward" in cfg else "sparse", cfg.env.obs_mode],
             notes=f"Git commit: {git_commit}"
         )
+        wandb.config.update({"output_dir": str(output_dir)})
 
     # Initialize Runner
     runner = PPORunner(cfg)
