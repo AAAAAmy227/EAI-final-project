@@ -153,7 +153,11 @@ class PPORunner:
         self.async_eval = cfg.get("async_eval", True)  # Enable async eval by default
         self.eval_thread = None
         self.eval_stream = torch.cuda.Stream() if self.async_eval else None
-        self.eval_agent_snapshot = None  # Will hold model weights snapshot during async eval
+        # Create separate eval agent to avoid race condition with training agent
+        if self.async_eval:
+            self.eval_agent = Agent(self.n_obs, self.n_act, device=self.device)
+        else:
+            self.eval_agent = None
 
     def _setup_compiled_functions(self):
         """Setup torch.compile and CudaGraphModule."""
@@ -258,7 +262,9 @@ class PPORunner:
                 reward_comps = infos["final_info"]["reward_components"]
             if reward_comps is not None:
                 for k, v in reward_comps.items():
-                    self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + v
+                    # Handle GPU tensors (convert to scalar if needed)
+                    val = v.item() if hasattr(v, 'item') else v
+                    self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + val
                 self.reward_component_count += 1
             # Accumulate success/fail counts on GPU (no sync until logging)
             # Check both top-level and final_info (ManiSkill moves info there on auto_reset)
@@ -542,10 +548,18 @@ class PPORunner:
             
             episode_rewards += reward
             
-            # Accumulate reward components
+            # Accumulate reward components (check both top-level and final_info)
+            reward_comps = None
             if "reward_components" in eval_infos:
-                for k, v in eval_infos["reward_components"].items():
-                    eval_reward_components[k] = eval_reward_components.get(k, 0) + v
+                reward_comps = eval_infos["reward_components"]
+            elif "final_info" in eval_infos and "reward_components" in eval_infos["final_info"]:
+                reward_comps = eval_infos["final_info"]["reward_components"]
+            
+            if reward_comps is not None:
+                for k, v in reward_comps.items():
+                    # Handle GPU tensors (convert to scalar if needed)
+                    val = v.item() if hasattr(v, 'item') else v
+                    eval_reward_components[k] = eval_reward_components.get(k, 0) + val
                 eval_component_count += 1
                 
                 # Collect per-step data for CSV export
