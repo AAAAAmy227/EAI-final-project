@@ -1751,13 +1751,13 @@ class Track1Env(BaseEnv):
             action_rate = torch.zeros(self.num_envs, device=self.device)
         
         # 5.5 Hold progress reward: proportional to hold time at lift_target height
-        # Total reward over the duration will sum to 1.0 (unit part)
-        # R_t = 2 * counter / (T * (T + 1)), overall quadratic total reward
+        # Total reward over the duration will sum to T (average 1 reward per step)
+        # R_t = 2 * counter / (T + 1), linear growth with quadratic sum
         if self.stable_hold_steps > 0 and hasattr(self, 'lift_hold_counter'):
             T = float(self.stable_hold_steps)
-            hold_progress = (2.0 * self.lift_hold_counter.float()) / (T * (T + 1.0))
-            # Clamp to prevent tiny negative/extreme values, though counter is 0 to T
-            hold_progress = torch.clamp(hold_progress, min=0.0, max=2.0/T)
+            hold_progress = (2.0 * self.lift_hold_counter.float()) / (T + 1.0)
+            # Clamp to prevent extreme values, max is at t=T: 2T/(T+1) ≈ 2
+            hold_progress = torch.clamp(hold_progress, min=0.0, max=2.0)
         else:
             hold_progress = torch.zeros(self.num_envs, device=self.device)
         
@@ -1800,7 +1800,7 @@ class Track1Env(BaseEnv):
         
         # 8.5 Grasp hold reward: reward for stable continuous grasp
         # Similar to hold_progress but for grasping (not necessarily lifting)
-        # R_t = 2 * counter / (T * (T + 1)), ensuring sum over T steps is 1.0 * weight
+        # R_t = 2 * counter / (T + 1), ensuring sum over T steps is T * weight (avg 1/step)
         if hasattr(self, 'grasp_hold_max_steps') and self.grasp_hold_max_steps > 0:
             if not hasattr(self, 'grasp_hold_counter'):
                 self.grasp_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
@@ -1812,15 +1812,11 @@ class Track1Env(BaseEnv):
                 torch.zeros_like(self.grasp_hold_counter)
             )
             
-            # Cap counter at max_steps to maintain constant reward after max duration
-            # Once reached max_steps, the reward becomes constant (2/(T+1)) ≈ 2/T
-            # wait, if we cap the counter, the formula 2*counter/(T*(T+1)) will also be capped.
-            # But the requirement is likely to reward *holding*.
-            # Let's use the same normalized quadratic formula as hold_progress.
-            
+            # Cap counter at max_steps to maintain constant reward after reaching max
+            # Max reward at t=T: 2T/(T+1) ≈ 2
             current_count = torch.clamp(self.grasp_hold_counter, max=self.grasp_hold_max_steps)
             T = float(self.grasp_hold_max_steps)
-            grasp_hold_reward = (2.0 * current_count.float()) / (T * (T + 1.0))
+            grasp_hold_reward = (2.0 * current_count.float()) / (T + 1.0)
         else:
             grasp_hold_reward = torch.zeros(self.num_envs, device=self.device)
         

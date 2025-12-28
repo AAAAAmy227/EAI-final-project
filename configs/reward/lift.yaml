@@ -26,7 +26,7 @@ adaptive_grasp_weight:
   enabled: true         # Enable adaptive weighting
   alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
   eps: 1e-8             # Floor for success rate to prevent division by zero
-  max_weight: 10000.0    # Cap to prevent weight explosion
+  max_weight: 1000.0    # Cap to prevent weight explosion
   tau: 0.0005             # EMA decay rate for tracking success rate
 
 # Gated lift reward: only give lift reward when is_grasped=True
@@ -40,7 +40,7 @@ adaptive_lift_weight:
   enabled: true         # Enable adaptive weighting
   alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
   eps: 1e-8             # Floor for success rate to prevent division by zero
-  max_weight: 10000.0    # Cap to prevent weight explosion
+  max_weight: 1000.0    # Cap to prevent weight explosion
   tau: 0.0005             # EMA decay rate for tracking success rate
 
 # Adaptive success weight: dynamically scale success bonus by inverse success rate
@@ -50,7 +50,7 @@ adaptive_success_weight:
   enabled: true         # Enable adaptive weighting
   alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
   eps: 1e-8             # Floor for success rate to prevent division by zero
-  max_weight: 10000.0    # Cap to prevent weight explosion
+  max_weight: 1000.0    # Cap to prevent weight explosion
   tau: 0.0005             # EMA decay rate for tracking success rate
 
 # Approach reward curve configuration
