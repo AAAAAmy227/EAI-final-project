@@ -1667,6 +1667,14 @@ class Track1Env(BaseEnv):
         cube_pos = self.red_cube.pose.p
         cube_height = cube_pos[:, 2]
         
+        # 0. Check if currently grasping (used for gating other rewards)
+        agent = self.right_arm
+        is_grasped = agent.is_grasping(
+            self.red_cube,
+            min_force=self.grasp_min_force,
+            max_angle=self.grasp_max_angle
+        )
+        
         # Approach reward calculation based on approach_mode and approach_curve
         threshold = self.approach_threshold
         zero_point = self.approach_zero_point
@@ -1716,6 +1724,9 @@ class Track1Env(BaseEnv):
             raw_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
             threshold = self.horizontal_displacement_threshold
             horizontal_displacement = torch.clamp(raw_displacement - threshold, min=0.0)
+            
+            # Disable horizontal displacement penalty when grasping
+            horizontal_displacement = horizontal_displacement * (~is_grasped).float()
         else:
             horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
         
@@ -1789,13 +1800,6 @@ class Track1Env(BaseEnv):
         fail_penalty = fail.float()
         
         # 8. Grasp reward: bonus for successfully grasping the cube
-        agent = self.right_arm
-        
-        is_grasped = agent.is_grasping(
-            self.red_cube,
-            min_force=self.grasp_min_force,
-            max_angle=self.grasp_max_angle
-        )
         grasp_reward = is_grasped.float()  # 0 or 1
         
         # 8.5 Grasp hold reward: reward for stable continuous grasp
