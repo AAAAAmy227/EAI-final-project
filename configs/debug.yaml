@@ -1,0 +1,18 @@
+defaults:
+  - train
+  - _self_
+
+wandb:
+  enabled: false
+
+compile: false
+cudagraphs: false
+
+
+# Training hyperparameters
+training:
+  total_timesteps: 1_000_000
+  num_envs: 2048
+  num_steps: 400
+  
+  eval_freq: 1

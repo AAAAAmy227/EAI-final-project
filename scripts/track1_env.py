@@ -14,7 +14,7 @@ from mani_skill.utils.structs import Actor
 from sapien.physx import PhysxRigidBodyComponent
 from sapien.render import RenderBodyComponent
 from scripts.so101 import SO101
-
+import mani_skill.envs.utils.randomization as randomization
 
 
 
@@ -48,6 +48,8 @@ class Track1Env(BaseEnv):
         self.eval_mode = eval_mode  # Store eval mode flag
         self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
         self.undistort_alpha = undistort_alpha  # For pinhole output modes
+        
+        self.space_gap = 0.001 # 5mm gap for initialize because of friction
         
         # Cube physics properties
         if cube_physics is None:
@@ -1235,7 +1237,7 @@ class Track1Env(BaseEnv):
             name="red_cube",
             half_size=0.015,
             base_color=[1, 0, 0, 1],
-            default_pos=[0.497, 0.26, 0.015]
+            default_pos=[0.497, 0.26, 0.015+ self.space_gap]
         )
         
         # Green cube: only load for stack and sort tasks
@@ -1248,7 +1250,7 @@ class Track1Env(BaseEnv):
                 name="green_cube",
                 half_size=0.005,
                 base_color=[0, 1, 0, 1],
-                default_pos=[0.497, 0.30, 0.005]
+                default_pos=[0.497, 0.30, 0.005+ self.space_gap]
             )
         else:  # stack
             # Stack task: green cube is 3cm
@@ -1256,7 +1258,7 @@ class Track1Env(BaseEnv):
                 name="green_cube",
                 half_size=0.015,
                 base_color=[0, 1, 0, 1],
-                default_pos=[0.497, 0.30, 0.015]
+                default_pos=[0.497, 0.30, 0.015+ self.space_gap]
             )
 
     def _build_cube(self, name: str, half_size: float, base_color: list, default_pos: list) -> Actor:
@@ -1339,8 +1341,8 @@ class Track1Env(BaseEnv):
             if self.task == "lift":
                 # Red cube random in configured spawn_bounds (or default grid)
                 spawn_grid = self.spawn_bounds if self.spawn_bounds else self.grid_bounds["right"]
-                red_pos = self._random_grid_position(b, spawn_grid, z=0.015)
-                self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
+                red_pos, red_quat = self._random_grid_position(b, spawn_grid, z=0.015 + self.space_gap)
+                self.red_cube.set_pose(Pose.create_from_pq(p=red_pos, q=red_quat))
                 
                 # Store initial cube full pos for displacement observation
                 if not hasattr(self, "initial_red_cube_pos"):
@@ -1434,7 +1436,7 @@ class Track1Env(BaseEnv):
         x = torch.rand(batch_size, device=self.device) * (grid["x_max"] - grid["x_min"]) + grid["x_min"]
         y = torch.rand(batch_size, device=self.device) * (grid["y_max"] - grid["y_min"]) + grid["y_min"]
         z_tensor = torch.full((batch_size,), z, device=self.device)
-        return torch.stack([x, y, z_tensor], dim=1)
+        return torch.stack([x, y, z_tensor], dim=1), randomization.random_quaternions(batch_size, lock_x=True, lock_y=True, lock_z=False)
 
     def evaluate(self):
         """Evaluate success/fail based on task."""
