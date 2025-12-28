@@ -34,6 +34,7 @@ class Track1Env(BaseEnv):
         control_mode: str = "pd_joint_target_delta_pos",  # control mode from Hydra config
         render_scale: int = 3,
         reward_config: dict = None,  # Reward configuration from Hydra
+        cube_physics: dict = None,  # Physical properties of objects
         action_bounds: dict = None,  # Per-joint action bounds override
         camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
         undistort_alpha: float = 0.25,  # Undistortion alpha for pinhole modes
@@ -45,6 +46,16 @@ class Track1Env(BaseEnv):
         self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
         self.undistort_alpha = undistort_alpha  # For pinhole output modes
         
+        # Cube physics properties
+        if cube_physics is None:
+            cube_physics = {
+                "mass": 0.027,  # Default for 3cm cube
+                "static_friction": 0.6,
+                "dynamic_friction": 0.6,
+                "restitution": 0.0
+            }
+        self.cube_physics = cube_physics
+
         # Obs normalization config
         if obs_normalization is None:
             obs_normalization = {}
@@ -1248,25 +1259,44 @@ class Track1Env(BaseEnv):
             merged = Actor.merge(cubes, name=name)
             self.scene.add_to_state_dict_registry(merged)
             
-            # Randomize physical properties
-            self._randomize_cube_physics(merged)
+            # Apply physical properties
+            self._apply_cube_physics(merged)
             return merged
         else:
             builder = self.scene.create_actor_builder()
             builder.add_box_collision(half_size=[half_size] * 3)
             builder.add_box_visual(half_size=[half_size] * 3, material=base_color[:3])
             builder.initial_pose = sapien.Pose(p=default_pos)
-            return builder.build(name=name)
+            cube = builder.build(name=name)
+            
+            # Apply physical properties even in non-randomized mode
+            self._apply_cube_physics(cube)
+            return cube
 
-    def _randomize_cube_physics(self, cube: Actor):
-        """Randomize cube mass and friction."""
+    def _apply_cube_physics(self, cube: Actor):
+        """Apply physics properties to cube (optionally randomized)."""
+        p = self.cube_physics
         for i, obj in enumerate(cube._objs):
             rigid_body: PhysxRigidBodyComponent = obj.find_component_by_type(PhysxRigidBodyComponent)
             if rigid_body is not None:
-                rigid_body.mass = np.random.uniform(0.05, 0.2)
+                # Apply mass
+                if self.domain_randomization:
+                    # Randomize mass around config value (+/- 50%)
+                    rigid_body.mass = p["mass"] * np.random.uniform(0.5, 1.5)
+                else:
+                    rigid_body.mass = p["mass"]
+                
+                # Apply friction and restitution
                 for shape in rigid_body.collision_shapes:
-                    shape.physical_material.dynamic_friction = np.random.uniform(0.2, 0.5)
-                    shape.physical_material.static_friction = np.random.uniform(0.2, 0.5)
+                    if self.domain_randomization:
+                        # Randomize friction around config values (+/- 30%)
+                        shape.physical_material.static_friction = p["static_friction"] * np.random.uniform(0.7, 1.3)
+                        shape.physical_material.dynamic_friction = p["dynamic_friction"] * np.random.uniform(0.7, 1.3)
+                    else:
+                        shape.physical_material.static_friction = p["static_friction"]
+                        shape.physical_material.dynamic_friction = p["dynamic_friction"]
+                    
+                    shape.physical_material.restitution = p.get("restitution", 0.0)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         """Initialize episode with randomized object positions and robot poses."""

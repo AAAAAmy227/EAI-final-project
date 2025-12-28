@@ -45,3 +45,11 @@ camera:
   # 1.0 = keep all source pixels (has black borders, image shrinks)
   # 0.25 = optimal for full work area visibility
   undistort_alpha: 0.25
+
+# Cube Physical Properties (aligned with reference implementation)
+# These values are applied to the cube during environment creation
+cube_physics:
+  mass: 0.1                 # 100g (reference uses 0.1)
+  static_friction: 5.0      # High friction for stable grasp (reference uses 5.0)
+  dynamic_friction: 3.0     # Dynamic friction (reference uses 3.0)
+  restitution: 0.0          # No bounce (reference uses 0.0)
