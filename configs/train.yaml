@@ -41,7 +41,7 @@ ppo:
   clip_coef: 0.2
   clip_vloss: false      # Whether to clip value loss (as per original PPO paper)
   norm_adv: true        # Whether to normalize advantages per minibatch
-  ent_coef: 0.005
+  ent_coef: 0.001
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.015      # Reduced from 0.2 to prevent policy collapse (Standard PPO: 0.01-0.02)

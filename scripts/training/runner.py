@@ -869,7 +869,9 @@ class PPORunner:
                 for k, v in reward_comps.items():
                     # Handle GPU tensors (convert to scalar if needed)
                     val = v.item() if hasattr(v, 'item') else v
-                    eval_reward_components[k] = eval_reward_components.get(k, 0) + val
+                    # Skip None values to avoid TypeError
+                    if val is not None:
+                        eval_reward_components[k] = eval_reward_components.get(k, 0) + val
                 eval_component_count += 1
                 
                 # Collect per-step data for CSV export
@@ -880,9 +882,9 @@ class PPORunner:
                     }
                     # Add each reward component
                     for k, v in reward_comps.items():
-                        # Handle GPU tensors
+                        # Handle GPU tensors and None values
                         val = v.item() if hasattr(v, 'item') else v
-                        step_data[k] = val
+                        step_data[k] = val if val is not None else 0.0
                     
                     # Add success and fail status for this step
                     # Check both top-level and final_info for current status
