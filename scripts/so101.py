@@ -45,8 +45,8 @@ class SO101(BaseAgent):
             gripper=dict(static_friction=2, dynamic_friction=2, restitution=0.0)
         ),
         link=dict(
-            Fixed_Jaw=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
-            Moving_Jaw=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
+            gripper_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
+            moving_jaw_so101_v1_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
         ),
     )
 
