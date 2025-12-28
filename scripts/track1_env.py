@@ -898,7 +898,14 @@ class Track1Env(BaseEnv):
                     half_size=[0.3, 0.3, 0.01], 
                     material=sapien.render.RenderMaterial(base_color=color)
                 )
-                builder.add_box_collision(half_size=[0.3, 0.3, 0.01])
+                # Use high-friction material for table surface as well
+                table_material = sapien.physx.PhysxMaterial(
+                    static_friction=2.0, dynamic_friction=2.0, restitution=0.0
+                )
+                builder.add_box_collision(
+                    half_size=[0.3, 0.3, 0.01],
+                    material=table_material
+                )
                 builder.initial_pose = sapien.Pose(p=[0.3, 0.3, -0.01])
                 builder.set_scene_idxs([i])
                 table = builder.build_static(name=f"table_{i}")
@@ -908,8 +915,15 @@ class Track1Env(BaseEnv):
             self.scene.add_to_state_dict_registry(self.table)
         else:
             builder = self.scene.create_actor_builder()
+            # Use high-friction material for table surface as well
+            table_material = sapien.physx.PhysxMaterial(
+                static_friction=2.0, dynamic_friction=2.0, restitution=0.0
+            )
             builder.add_box_visual(half_size=[0.3, 0.3, 0.01], material=[0.9, 0.9, 0.9])
-            builder.add_box_collision(half_size=[0.3, 0.3, 0.01])
+            builder.add_box_collision(
+                half_size=[0.3, 0.3, 0.01],
+                material=table_material
+            )
             builder.initial_pose = sapien.Pose(p=[0.3, 0.3, -0.01])
             self.table = builder.build_static(name="table")
 

@@ -113,7 +113,7 @@ class SO101(BaseAgent):
             all_joint_names,
             lower=None,
             upper=None,
-            stiffness=[1e3] * 6,
+            stiffness=[1e3] * 5 + [1e2], # smooth the gripper movement
             damping=[1e2] * 6,
             force_limit=100,
             normalize_action=False,
@@ -124,7 +124,7 @@ class SO101(BaseAgent):
             all_joint_names,
             lower,
             upper,
-            stiffness=[1e3] * 6,
+            stiffness=[1e3] * 5 + [1e2], # smooth the gripper movement
             damping=[1e2] * 6,
             force_limit=100,
             use_delta=True,
