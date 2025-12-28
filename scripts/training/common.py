@@ -235,6 +235,8 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         domain_randomization=domain_randomization,
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
         reward_config=reward_config,
+        cube_physics=OmegaConf.to_container(cfg.env.cube_physics, resolve=True) if "cube_physics" in cfg.env else None,
+        table_physics=OmegaConf.to_container(cfg.env.table_physics, resolve=True) if "table_physics" in cfg.env else None,
         action_bounds=action_bounds,
         camera_extrinsic=camera_extrinsic,
         undistort_alpha=undistort_alpha,

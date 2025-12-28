@@ -54,17 +54,26 @@ cube_physics:
   dynamic_friction: 3.0     # Dynamic friction (reference uses 3.0)
   restitution: 0.0          # No bounce (reference uses 0.0)
 
+# Table Physical Properties
+# These values are applied to the table surface
+# Note: Actual contact friction = sqrt(cube_friction * table_friction)
+# Example: sqrt(5.0 * 2.0) = 3.16
+table_physics:
+  static_friction: 2.0      # Table static friction
+  dynamic_friction: 2.0     # Table dynamic friction
+  restitution: 0.0          # No bounce
+
 # Gripper Physical Properties (aligned with reference implementation)
 # These values are applied to the robot gripper links
 gripper_physics:
   static_friction: 2.0      # Gripper friction (reference uses 2.0)
   dynamic_friction: 2.0     # Gripper friction (reference uses 2.0)
   restitution: 0.0          # No bounce (reference uses 0.0)
-  patch_radius: 0.05         # Torsional friction contact patch radius (reference uses 0.1)
-  min_patch_radius: 0.05     # Minimum torsional patch radius (reference uses 0.1)
+  patch_radius: 0.1         # Torsional friction contact patch radius (reference uses 0.1)
+  min_patch_radius: 0.1     # Minimum torsional patch radius (reference uses 0.1)
 
 # Physics Solver Configuration
 # ManiSkill default is 15 iterations. Source code recommends >= 20 for stable grasps.
 solver:
-  position_iterations: 20   # Solver position iterations (default: 15, recommended for grasping: >= 20)
+  position_iterations: 25   # Solver position iterations (default: 15, recommended for grasping: >= 20)
   velocity_iterations: 1    # Solver velocity iterations (default: 1)

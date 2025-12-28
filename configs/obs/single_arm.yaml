@@ -19,7 +19,8 @@ relative_pos_clip: 0.5
 # - ["tcp_pos"]: only include tcp_pos
 # - ["red_cube_pos"]: only include red_cube_pos
 # - ["tcp_pos", "red_cube_pos"] or true: include both
-include_abs_pos: ["tcp_pos", "red_cube_pos"]
+# include_abs_pos: ["tcp_pos", "red_cube_pos"]
+include_abs_pos: false
 
 # How to include target_qpos:
 # - true: include target_qpos / qpos_scale

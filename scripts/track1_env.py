@@ -34,7 +34,8 @@ class Track1Env(BaseEnv):
         control_mode: str = "pd_joint_target_delta_pos",  # control mode from Hydra config
         render_scale: int = 3,
         reward_config: dict = None,  # Reward configuration from Hydra
-        cube_physics: dict = None,  # Physical properties of objects
+        cube_physics: dict = None,  # Physical properties of the cube
+        table_physics: dict = None,  # Physical properties of the table
         action_bounds: dict = None,  # Per-joint action bounds override
         camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
         undistort_alpha: float = 0.25,  # Undistortion alpha for pinhole modes
@@ -55,6 +56,15 @@ class Track1Env(BaseEnv):
                 "restitution": 0.0
             }
         self.cube_physics = cube_physics
+        
+        # Table physics properties
+        if table_physics is None:
+            table_physics = {
+                "static_friction": 2.0,
+                "dynamic_friction": 2.0,
+                "restitution": 0.0
+            }
+        self.table_physics = table_physics
 
         # Obs normalization config
         if obs_normalization is None:
@@ -898,9 +908,11 @@ class Track1Env(BaseEnv):
                     half_size=[0.3, 0.3, 0.01], 
                     material=sapien.render.RenderMaterial(base_color=color)
                 )
-                # Use high-friction material for table surface as well
+                # Use friction material from config for table surface
                 table_material = sapien.physx.PhysxMaterial(
-                    static_friction=2.0, dynamic_friction=2.0, restitution=0.0
+                    static_friction=self.table_physics["static_friction"],
+                    dynamic_friction=self.table_physics["dynamic_friction"],
+                    restitution=self.table_physics["restitution"]
                 )
                 builder.add_box_collision(
                     half_size=[0.3, 0.3, 0.01],
@@ -915,9 +927,11 @@ class Track1Env(BaseEnv):
             self.scene.add_to_state_dict_registry(self.table)
         else:
             builder = self.scene.create_actor_builder()
-            # Use high-friction material for table surface as well
+            # Use friction material from config for table surface
             table_material = sapien.physx.PhysxMaterial(
-                static_friction=2.0, dynamic_friction=2.0, restitution=0.0
+                static_friction=self.table_physics["static_friction"],
+                dynamic_friction=self.table_physics["dynamic_friction"],
+                restitution=self.table_physics["restitution"]
             )
             builder.add_box_visual(half_size=[0.3, 0.3, 0.01], material=[0.9, 0.9, 0.9])
             builder.add_box_collision(
