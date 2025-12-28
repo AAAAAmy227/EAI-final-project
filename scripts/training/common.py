@@ -168,9 +168,18 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     control_freq = cfg.env.get("control_freq", 30)  # Control frequency (real robot is 30 Hz)
     
     # Build sim_config dict for ManiSkill
+    # Read solver config from YAML (with fallbacks to ManiSkill-recommended values)
+    solver_cfg = cfg.env.get("solver", {})
+    solver_position_iterations = solver_cfg.get("position_iterations", 20)
+    solver_velocity_iterations = solver_cfg.get("velocity_iterations", 1)
+    
     sim_config = {
         "sim_freq": sim_freq,
         "control_freq": control_freq,
+        "scene_config": {
+            "solver_position_iterations": solver_position_iterations,
+            "solver_velocity_iterations": solver_velocity_iterations,
+        }
     }
     
     # Get camera config options
@@ -194,6 +203,29 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
     if "robot_urdf" in cfg.env:
         from scripts.so101 import SO101
         SO101.urdf_path = cfg.env.robot_urdf
+    
+    # Apply gripper physics config from YAML to SO101 (before environment creation)
+    if "gripper_physics" in cfg.env:
+        from scripts.so101 import SO101
+        gripper_cfg = cfg.env.gripper_physics
+        
+        # Get default config and override with YAML values
+        SO101.urdf_config = SO101._get_default_urdf_config()
+        SO101.urdf_config["_materials"]["gripper"] = dict(
+            static_friction=gripper_cfg.get("static_friction", 2.0),
+            dynamic_friction=gripper_cfg.get("dynamic_friction", 2.0),
+            restitution=gripper_cfg.get("restitution", 0.0),
+        )
+        SO101.urdf_config["link"]["gripper_link"] = dict(
+            material="gripper",
+            patch_radius=gripper_cfg.get("patch_radius", 0.1),
+            min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
+        )
+        SO101.urdf_config["link"]["moving_jaw_so101_v1_link"] = dict(
+            material="gripper",
+            patch_radius=gripper_cfg.get("patch_radius", 0.1),
+            min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
+        )
     
     env_kwargs = dict(
         task=cfg.env.task,

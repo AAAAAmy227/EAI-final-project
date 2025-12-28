@@ -40,15 +40,22 @@ class SO101(BaseAgent):
     # Active mode: 'single' or 'dual' - set by environment before agent creation
     active_mode = "single"
     
-    urdf_config = dict(
-        _materials=dict(
-            gripper=dict(static_friction=2, dynamic_friction=2, restitution=0.0)
-        ),
-        link=dict(
-            gripper_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
-            moving_jaw_so101_v1_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
-        ),
-    )
+    # Default urdf_config - can be overridden by environment before agent creation
+    # This will be modified by the environment based on config values
+    urdf_config = None
+    
+    @classmethod
+    def _get_default_urdf_config(cls):
+        """Get default URDF config with hardcoded reference values."""
+        return dict(
+            _materials=dict(
+                gripper=dict(static_friction=2, dynamic_friction=2, restitution=0.0)
+            ),
+            link=dict(
+                gripper_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
+                moving_jaw_so101_v1_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
+            ),
+        )
 
     keyframes = dict(
         rest=Keyframe(
