@@ -8,13 +8,13 @@ reward_type: "parallel"
 weights:
   approach: 1.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
   grasp: 1.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
-  grasp_hold: 5.0       # Reward for stable grasp, grows linearly with consecutive grasp steps
-  horizontal_displacement: -1.0  # Penalize cube XY displacement from initial position
+  grasp_hold: 0.0       # Reward for stable grasp, grows linearly with consecutive grasp steps
+  horizontal_displacement: 0.0  # Penalize cube XY displacement from initial position
   lift: 1.0           # Lift cube up (height in meters, scaled up)
-  hold_progress: 5.0  # Reward for holding cube at lift_target height, proportional to hold time (0~1)
-  action_rate: -0.1   # Penalize action changes (anti-jitter), range ~[0, 0.2]
-  success: 100.0        # Task completion bonus
-  fail: -100.0         # Penalty when cube goes out of bounds
+  hold_progress: 0.0  # Reward for holding cube at lift_target height, proportional to hold time (0~1)
+  action_rate: 0  # Penalize action changes (anti-jitter), range ~[0, 0.2]
+  success: 1.0        # Task completion bonus
+  fail: 0.0         # Penalty when cube goes out of bounds
 
 # Grasp hold settings: reward stability of grasp
 grasp_hold_max_steps: 100  # Steps to reach full reward (1 second at 30Hz)
@@ -23,7 +23,7 @@ grasp_hold_max_steps: 100  # Steps to reach full reward (1 second at 30Hz)
 # Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
 # This boosts rare events (successful grasps) to provide stronger learning signal
 adaptive_grasp_weight:
-  enabled: true         # Enable adaptive weighting
+  enabled: false         # Enable adaptive weighting
   alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
   eps: 1e-8             # Floor for success rate to prevent division by zero
   max_weight: 100.0    # Cap to prevent weight explosion
@@ -37,7 +37,7 @@ gate_lift_with_grasp: true
 # Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
 # This boosts rare lift events to provide stronger learning signal
 adaptive_lift_weight:
-  enabled: true         # Enable adaptive weighting
+  enabled: false         # Enable adaptive weighting
   alpha: 0.5            # Exponent for inverse scaling (0.5 = sqrt, 1.0 = linear inverse)
   eps: 1e-8             # Floor for success rate to prevent division by zero
   max_weight: 100.0    # Cap to prevent weight explosion

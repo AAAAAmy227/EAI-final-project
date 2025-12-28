@@ -880,11 +880,27 @@ class PPORunner:
                         "step": step,
                         "reward": reward[env_idx].item(),
                     }
-                    # Add each reward component
-                    for k, v in reward_comps.items():
-                        # Handle GPU tensors and None values
-                        val = v.item() if hasattr(v, 'item') else v
-                        step_data[k] = val if val is not None else 0.0
+                    
+                    # Add each reward component (prefer per-env values if available)
+                    # Check for per-env components first (added in track1_env.py)
+                    reward_comps_per_env = None
+                    if "reward_components_per_env" in eval_infos:
+                        reward_comps_per_env = eval_infos["reward_components_per_env"]
+                    elif "final_info" in eval_infos and "reward_components_per_env" in eval_infos["final_info"]:
+                        reward_comps_per_env = eval_infos["final_info"]["reward_components_per_env"]
+                    
+                    if reward_comps_per_env is not None:
+                        # Use per-environment values (each component is [num_envs] tensor)
+                        for k, v in reward_comps_per_env.items():
+                            # Extract this env's value from the tensor
+                            val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
+                            step_data[k] = val if val is not None else 0.0
+                    else:
+                        # Fallback to averaged values (backward compatibility)
+                        for k, v in reward_comps.items():
+                            # Handle GPU tensors and None values
+                            val = v.item() if hasattr(v, 'item') else v
+                            step_data[k] = val if val is not None else 0.0
                     
                     # Add success and fail status for this step
                     # Check both top-level and final_info for current status

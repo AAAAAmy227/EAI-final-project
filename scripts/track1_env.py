@@ -1965,6 +1965,24 @@ class Track1Env(BaseEnv):
             "hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress).mean(),
             "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
         }
+        
+        # Store per-environment reward components for CSV export (evaluation only)
+        # Only create this during eval to save memory (training has 2048 envs, eval has 8)
+        if self.eval_mode:
+            # These are [num_envs] tensors without .mean(), so each env has its own value
+            info["reward_components_per_env"] = {
+                "approach": w["approach"] * approach_reward,
+                "grasp": dynamic_grasp_weight * grasp_reward,
+                "grasp_hold": w.get("grasp_hold", 0.0) * grasp_hold_reward,
+                "horizontal_displacement": w["horizontal_displacement"] * horizontal_displacement,
+                "lift": dynamic_lift_weight * effective_lift_reward,
+                "hold_progress": w.get("hold_progress", 0.0) * effective_hold_progress,
+                "action_rate": w.get("action_rate", 0.0) * action_rate,
+            }
+            # Add approach2 for dual_point mode
+            if self.approach_mode == "dual_point":
+                info["reward_components_per_env"]["approach2"] = w["approach"] * approach2_reward
+        
         # Log adaptive grasp weight metrics if enabled
         if self.adaptive_grasp_enabled:
             info["reward_components"]["grasp_dynamic_weight"] = dynamic_grasp_weight
@@ -1977,7 +1995,7 @@ class Track1Env(BaseEnv):
         if self.adaptive_success_enabled:
             info["reward_components"]["success_dynamic_weight"] = dynamic_success_weight
             info["reward_components"]["success_rate"] = self.task_success_rate
-        # Only log approach2 in dual_point mode
+        # Only log approach2 in dual_point mode (for averaged components)
         if self.approach_mode == "dual_point":
             info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean()
         # Track success/fail/grasp counts (keep as GPU tensors)
