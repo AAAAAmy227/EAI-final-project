@@ -40,10 +40,12 @@ class Track1Env(BaseEnv):
         camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
         undistort_alpha: float = 0.25,  # Undistortion alpha for pinhole modes
         obs_normalization: dict = None,  # Obs normalization config (qvel_clip, etc.)
+        eval_mode: bool = False,  # If True, disable adaptive reward weights
         **kwargs
     ):
         self.task = task
         self.domain_randomization = domain_randomization
+        self.eval_mode = eval_mode  # Store eval mode flag
         self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
         self.undistort_alpha = undistort_alpha  # For pinhole output modes
         
@@ -1834,8 +1836,8 @@ class Track1Env(BaseEnv):
         success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
         success_bonus = success.float()
         
-        # Adaptive success weight: scale by inverse success rate
-        if self.adaptive_success_enabled:
+        # Adaptive success weight: scale by inverse success rate (disabled during eval)
+        if self.adaptive_success_enabled and not self.eval_mode:
             # Lazy initialization
             if self.task_success_rate is None:
                 self.task_success_rate = torch.tensor(self.adaptive_success_eps, device=self.device)
@@ -1882,8 +1884,8 @@ class Track1Env(BaseEnv):
         else:
             grasp_hold_reward = torch.zeros(self.num_envs, device=self.device)
         
-        # Adaptive grasp weight: scale by inverse success rate
-        if self.adaptive_grasp_enabled:
+        # Adaptive grasp weight: scale by inverse success rate (disabled during eval)
+        if self.adaptive_grasp_enabled and not self.eval_mode:
             # Lazy initialization of grasp_success_rate (device not available in __init__)
             if self.grasp_success_rate is None:
                 self.grasp_success_rate = torch.tensor(self.adaptive_grasp_eps, device=self.device)
@@ -1913,7 +1915,7 @@ class Track1Env(BaseEnv):
         # Use lift_reward > 0 as the signal for "is_lifting"
         is_lifting = (effective_lift_reward > 0).float()
         
-        if self.adaptive_lift_enabled:
+        if self.adaptive_lift_enabled and not self.eval_mode:
             # Lazy initialization
             if self.lift_success_rate is None:
                 self.lift_success_rate = torch.tensor(self.adaptive_lift_eps, device=self.device)

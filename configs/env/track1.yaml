@@ -59,8 +59,8 @@ cube_physics:
 # Note: Actual contact friction = sqrt(cube_friction * table_friction)
 # Example: sqrt(5.0 * 2.0) = 3.16
 table_physics:
-  static_friction: 2.0      # Table static friction
-  dynamic_friction: 2.0     # Table dynamic friction
+  static_friction: 10.0      # Table static friction
+  dynamic_friction: 10.0     # Table dynamic friction
   restitution: 0.0          # No bounce
 
 # Gripper Physical Properties (aligned with reference implementation)

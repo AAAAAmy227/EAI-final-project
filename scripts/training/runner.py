@@ -883,6 +883,23 @@ class PPORunner:
                         # Handle GPU tensors
                         val = v.item() if hasattr(v, 'item') else v
                         step_data[k] = val
+                    
+                    # Add success and fail status for this step
+                    # Check both top-level and final_info for current status
+                    if "success" in eval_infos:
+                        step_data["success"] = bool(eval_infos["success"][env_idx].item())
+                    elif "final_info" in eval_infos and "success" in eval_infos["final_info"]:
+                        step_data["success"] = bool(eval_infos["final_info"]["success"][env_idx].item())
+                    else:
+                        step_data["success"] = False
+                    
+                    if "fail" in eval_infos:
+                        step_data["fail"] = bool(eval_infos["fail"][env_idx].item())
+                    elif "final_info" in eval_infos and "fail" in eval_infos["final_info"]:
+                        step_data["fail"] = bool(eval_infos["final_info"]["fail"][env_idx].item())
+                    else:
+                        step_data["fail"] = False
+                    
                     step_reward_data[env_idx].append(step_data)
             
             # Check for episode completion
@@ -928,24 +945,32 @@ class PPORunner:
                 wandb.log(eval_logs, step=self.global_step)
         
         if self.video_dir is not None:
-            # Finalize the evaluation video
+            # Finalize the evaluation video (saves to videos/*.mp4)
             self.eval_envs.call("flush_video", save=True)
-            self._async_split_videos()
             
-            # Save per-step reward data as CSV in eval-specific subfolder
+            # Split videos and save CSVs to new structure: split/evalN/envM/
             import csv
             from pathlib import Path
             video_dir_path = Path(self.video_dir)
-            eval_subfolder = video_dir_path / f"eval{self.eval_count}"
-            eval_subfolder.mkdir(exist_ok=True)
+            split_base_dir = video_dir_path.parent / "split"  # outputs/.../split/
+            eval_folder = split_base_dir / f"eval{self.eval_count}"  # split/eval0/
             
+            # Create eval folder
+            eval_folder.mkdir(parents=True, exist_ok=True)
+            
+            # Save CSVs to split/evalN/envM/rewards.csv
             for env_idx, steps in step_reward_data.items():
                 if steps:  # Only save if we have data
-                    csv_path = eval_subfolder / f"env{env_idx}_rewards.csv"
+                    env_folder = eval_folder / f"env{env_idx}"
+                    env_folder.mkdir(exist_ok=True)
+                    csv_path = env_folder / "rewards.csv"
                     with open(csv_path, 'w', newline='') as f:
                         writer = csv.DictWriter(f, fieldnames=steps[0].keys())
                         writer.writeheader()
                         writer.writerows(steps)
+            
+            # Split videos asynchronously to split/evalN/envM/record.mp4
+            self._async_split_videos(eval_folder)
             
             self.eval_count += 1  # Increment for next eval
 
@@ -999,18 +1024,23 @@ class PPORunner:
             torch.save(state, output_dir / "latest.pt")
             print(f"Model and stats saved to {model_path}")
 
-    def _async_split_videos(self):
-        """Asynchronously split tiled eval videos into individual env videos."""
-        from scripts.utils.split_video import split_videos_in_dir
+    def _async_split_videos(self, eval_folder):
+        """Asynchronously split tiled eval videos into individual env videos.
+        
+        Args:
+            eval_folder: Path to split/evalN/ where env subdirectories will be created
+        """
+        from scripts.utils.split_video import split_videos_in_dir_custom
         
         if not self.video_dir:
             return
         
         # Run in background thread (non-blocking)
         def split_task():
-            split_videos_in_dir(
+            split_videos_in_dir_custom(
                 self.video_dir,
                 self.cfg.training.num_eval_envs,
+                eval_folder,  # Custom output directory
                 rgb_only=True
             )
         

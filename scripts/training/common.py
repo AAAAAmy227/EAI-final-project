@@ -241,6 +241,7 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         camera_extrinsic=camera_extrinsic,
         undistort_alpha=undistort_alpha,
         obs_normalization=obs_normalization,
+        eval_mode=for_eval,  # Disable adaptive weights during evaluation
         sim_config=sim_config,
         render_mode="sensors",  # 'sensors' works with RecordEpisode, shows RGB only
         sim_backend="physx_cuda",

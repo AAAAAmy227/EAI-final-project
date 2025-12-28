@@ -175,6 +175,89 @@ def split_videos_in_dir(video_dir: str, num_envs: int, rgb_only: bool = True, ca
     return len(videos_to_process)
 
 
+def split_videos_in_dir_custom(video_dir: str, num_envs: int, eval_folder, rgb_only: bool = True):
+    """Split all tiled videos in a directory with custom output structure.
+    
+    Outputs to eval_folder/envN/record.mp4 instead of default split/ directory.
+    
+    Args:
+        video_dir: Directory containing mp4 files to split  
+        num_envs: Number of parallel environments
+        eval_folder: Path object for output directory (e.g., split/eval0/)
+        rgb_only: Only extract RGB (top half), default True
+    
+    Returns:
+        Number of videos processed
+    """
+    from pathlib import Path
+    video_dir = Path(video_dir)
+    eval_folder = Path(eval_folder)
+    
+    if not video_dir.exists():
+        return 0
+    
+    # Find mp4 files (look for newest unsplit video)
+    video_files = sorted(video_dir.glob("*.mp4"))
+    
+    if not video_files:
+        return 0
+    
+    # Process the most recent video (usually the one just recorded)
+    video_file = video_files[-1]
+    
+    print(f"Splitting {video_file.name} to {eval_folder}/...")
+    
+    # Get video info
+    frame_width, frame_height, fps, total_frames = get_video_info(str(video_file))
+    
+    # Calculate grid dimensions
+    nrows = int(np.sqrt(num_envs))
+    ncols = math.ceil(num_envs / nrows)
+    
+    actual_cell_w = frame_width // ncols
+    actual_cell_h = frame_height // nrows
+    
+    print(f"  Resolution: {frame_width}x{frame_height}, {fps} fps, {total_frames} frames")
+    print(f"  Grid: {nrows} rows x {ncols} cols, Cell: {actual_cell_w}x{actual_cell_h}")
+    
+    # Split into individual env videos
+    for env_idx in range(num_envs):
+        row = env_idx // ncols
+        col = env_idx % ncols
+        
+        x = col * actual_cell_w
+        y = row * actual_cell_h
+        
+        # Output to eval_folder/envN/record.mp4
+        env_folder = eval_folder / f"env{env_idx}"
+        env_folder.mkdir(exist_ok=True)
+        output_path = env_folder / "record.mp4"
+        
+        # Use ffmpeg crop filter
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_file),
+            "-vf", f"crop={actual_cell_w}:{actual_cell_h}:{x}:{y}",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-an",  # No audio
+            str(output_path)
+        ]
+        
+        print(f"  Extracting env{env_idx}...", end=" ", flush=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"FAILED")
+            print(f"  Error: {result.stderr[:200]}")
+        else:
+            print("OK")
+    
+    print(f"Videos saved to: {eval_folder}/")
+    return 1
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="Split tiled parallel env videos")
     parser.add_argument("input", type=str, help="Input video file or directory")
