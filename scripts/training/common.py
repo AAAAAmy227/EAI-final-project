@@ -13,11 +13,8 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 # Import Track1 environment
 try:
     from scripts.track1_env import Track1Env
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.getcwd())
-    from scripts.track1_env import Track1Env
+except ImportError as e:
+    raise UsageError("Track1 environment not found. Please run `uv run -m scripts.track1_env` to iresolve it.") from e
 
 
 class RunningMeanStd:
@@ -50,6 +47,14 @@ class RunningMeanStd:
         self.var = new_var
         self.count = tot_count
 
+    def state_dict(self):
+        return {"mean": self.mean, "var": self.var, "count": self.count}
+
+    def load_state_dict(self, state_dict):
+        self.mean.copy_(state_dict["mean"])
+        self.var.copy_(state_dict["var"])
+        self.count = state_dict["count"]
+
 
 class NormalizeObservationGPU(gym.Wrapper):
     """GPU-native observation normalization wrapper."""
@@ -59,6 +64,7 @@ class NormalizeObservationGPU(gym.Wrapper):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.epsilon = epsilon
         self.clip = clip
+        self.update_rms = True
         
         # Determine observation shape
         obs_shape = env.single_observation_space.shape
@@ -73,7 +79,8 @@ class NormalizeObservationGPU(gym.Wrapper):
         return self._normalize(obs), reward, terminated, truncated, info
     
     def _normalize(self, obs):
-        self.rms.update(obs)
+        if self.update_rms:
+            self.rms.update(obs)
         normalized = (obs - self.rms.mean) / torch.sqrt(self.rms.var + self.epsilon)
         return torch.clamp(normalized, -self.clip, self.clip)
 
@@ -87,14 +94,18 @@ class NormalizeRewardGPU(gym.Wrapper):
         self.gamma = gamma
         self.epsilon = epsilon
         self.clip = clip
+        self.update_rms = True
         self.rms = RunningMeanStd(shape=(), device=self.device)
-        self.returns = None
+        self.returns = torch.zeros(self.base_env.num_envs, device=self.device)
+
+    @property
+    def base_env(self):
+        return self.env.unwrapped
     
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        # Initialize returns tracker
-        num_envs = obs.shape[0]
-        self.returns = torch.zeros(num_envs, device=self.device)
+        # Reset returns tracker
+        self.returns.zero_()
         return obs, info
     
     def step(self, action):
@@ -102,7 +113,9 @@ class NormalizeRewardGPU(gym.Wrapper):
         
         # Update discounted returns
         self.returns = self.returns * self.gamma + reward
-        self.rms.update(self.returns.unsqueeze(1))
+        
+        if self.update_rms:
+            self.rms.update(self.returns.unsqueeze(1))
         
         # Normalize reward
         normalized_reward = reward / torch.sqrt(self.rms.var + self.epsilon)
@@ -110,7 +123,7 @@ class NormalizeRewardGPU(gym.Wrapper):
         
         # Reset returns for done environments
         done = terminated | truncated
-        self.returns = self.returns * (~done).float()
+        self.returns.mul_( (~done).float() )
         
         return obs, normalized_reward, terminated, truncated, info
 
