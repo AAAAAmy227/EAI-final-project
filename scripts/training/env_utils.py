@@ -168,8 +168,28 @@ class SingleArmWrapper(gym.Wrapper):
     
     Requires obs_mode='state_dict'.
     """
-    def __init__(self, env, right_arm_key="so101-1", left_arm_key="so101-0"):
+    def __init__(self, env, right_arm_key=None, left_arm_key=None):
         super().__init__(env)
+        
+        # Dynamic discovery of agent keys from the environment
+        if right_arm_key is None or left_arm_key is None:
+            # ManiSkill agent keys are usually sorted in the action space
+            # For dual-arm Track1, keys are ['uid-0', 'uid-1']
+            all_keys = sorted(self.env.single_action_space.keys())
+            
+            if len(all_keys) >= 2:
+                # Standard dual-arm setup: left is index 0, right is index 1
+                left_arm_key = left_arm_key or all_keys[0]
+                right_arm_key = right_arm_key or all_keys[1]
+            elif len(all_keys) == 1:
+                # Single arm setup
+                right_arm_key = right_arm_key or all_keys[0]
+                left_arm_key = left_arm_key or "none"
+            else:
+                # Fallback to SO101 defaults if discovery fails
+                right_arm_key = right_arm_key or SO101.get_agent_key("right")
+                left_arm_key = left_arm_key or SO101.get_agent_key("left")
+            
         self.right_arm_key = right_arm_key
         self.left_arm_key = left_arm_key
         
@@ -177,6 +197,10 @@ class SingleArmWrapper(gym.Wrapper):
         
         # Must use state_dict for structural filtering
         assert self.base_env.obs_mode == "state_dict", f"SingleArmWrapper requires state_dict mode, got {self.base_env.obs_mode}"
+        
+        # Verify the discovery
+        if self.right_arm_key not in self.env.single_action_space:
+             raise KeyError(f"SingleArmWrapper: Discoved right_arm_key '{self.right_arm_key}' not found in action space. Available: {list(self.env.single_action_space.keys())}")
         
         # Keep Action Space as a Dict, but only with the right arm
         # This allows FlattenActionWrapper to handle the flattening and naming later
@@ -434,9 +458,8 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         }
     }
     
-    # Configure SO101 class attributes (urdf_path, gripper physics) before environment creation
-    from scripts.so101 import SO101
-    SO101.configure_from_cfg(cfg)
+    # Configuration is now handled per-environment in Track1Env 
+    # using SO101.create_configured_class to avoid global state issues.
     
     # Get device ID for GPU selection
     device_id = cfg.get("device_id", 0)

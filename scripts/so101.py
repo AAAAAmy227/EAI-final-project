@@ -12,11 +12,54 @@ from mani_skill.sensors.camera import CameraConfig
 
 logger = logging.getLogger(__name__)
 
+# Cache to avoid re-registering the same configuration multiple times
+_CONFIGURED_SO101_CLASSES = {}
+
 @register_agent()
 class SO101(BaseAgent):
     uid = "so101"
     # Use absolute path to the asset provided in the workspace
     urdf_path = "/home/admin/Desktop/eai-final-project/eai-2025-fall-final-project-reference-scripts/assets/SO101/so101.urdf"
+
+    # Agent instance naming convention (used by ManiSkill)
+    # When using robot_uids=("so101", "so101"), instances are named:
+    LEFT_AGENT_SUFFIX = "-0"   # First in tuple
+    RIGHT_AGENT_SUFFIX = "-1"  # Second in tuple
+
+    @classmethod
+    def get_agent_key(cls, side: str) -> str:
+        """Get the agent key for left/right arm.
+        
+        Args:
+            side: "left" or "right"
+        Returns:
+            e.g., "so101-0" for left, "so101-1" for right
+        """
+        suffix = cls.LEFT_AGENT_SUFFIX if side == "left" else cls.RIGHT_AGENT_SUFFIX
+        return f"{cls.uid}{suffix}"
+
+    @classmethod
+    def create_configured_class(cls, mode: str, action_bounds: dict = None, urdf_path: str = None, urdf_config: dict = None):
+        """Create a new class with specific configuration to avoid global state modification."""
+        import uuid
+        new_uid = f"{cls.uid}-{uuid.uuid4().hex[:6]}"
+        
+        class ConfiguredSO101(cls):
+            uid = new_uid
+            active_mode = mode
+            if action_bounds:
+                if mode == "dual":
+                    action_bounds_dual_arm = action_bounds
+                else:
+                    action_bounds_single_arm = action_bounds
+            if urdf_path:
+                ConfiguredSO101.urdf_path = urdf_path
+            if urdf_config:
+                ConfiguredSO101.urdf_config = urdf_config
+        
+        # Register the new class so ManiSkill can find it by its new UID
+        register_agent(new_uid)(ConfiguredSO101)
+        return ConfiguredSO101
     
     # Per-joint action bounds (radians) - can be overridden before environment creation
     # Default values based on trajectory analysis (99th percentile + buffer)
@@ -55,37 +98,71 @@ class SO101(BaseAgent):
     )
     
     @classmethod
-    def configure_from_cfg(cls, cfg):
-        """Configure SO101 class attributes from Hydra config before environment creation.
-        
-        Must be called BEFORE gym.make() since these class attributes are read during agent init.
-        
-        Args:
-            cfg: Hydra config object with optional cfg.env.robot_urdf and cfg.env.gripper_physics
-        """
-        # Set custom robot URDF path if specified
-        if "robot_urdf" in cfg.env:
-            cls.urdf_path = cfg.env.robot_urdf
-        
-        # Apply gripper physics config
-        if "gripper_physics" in cfg.env:
+    def derive_urdf_config(cls, cfg):
+        """Derive urdf_config from config without modifying class state."""
+        urdf_config = copy.deepcopy(cls.urdf_config)
+        if hasattr(cfg, "env") and "gripper_physics" in cfg.env:
             gripper_cfg = cfg.env.gripper_physics
-            
-            cls.urdf_config["_materials"]["gripper"] = dict(
+            urdf_config["_materials"]["gripper"] = dict(
                 static_friction=gripper_cfg.get("static_friction", 2.0),
                 dynamic_friction=gripper_cfg.get("dynamic_friction", 2.0),
                 restitution=gripper_cfg.get("restitution", 0.0),
             )
-            cls.urdf_config["link"]["gripper_link"] = dict(
+            urdf_config["link"]["gripper_link"] = dict(
                 material="gripper",
                 patch_radius=gripper_cfg.get("patch_radius", 0.1),
                 min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
             )
-            cls.urdf_config["link"]["moving_jaw_so101_v1_link"] = dict(
+            urdf_config["link"]["moving_jaw_so101_v1_link"] = dict(
                 material="gripper",
                 patch_radius=gripper_cfg.get("patch_radius", 0.1),
                 min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
             )
+        return urdf_config
+
+    @classmethod
+    def configure_from_cfg(cls, cfg):
+        """Configure SO101 class attributes from Hydra config (Deprecated: modifies global state)."""
+        if hasattr(cfg, "env") and "robot_urdf" in cfg.env:
+            cls.urdf_path = cfg.env.robot_urdf
+        cls.urdf_config = cls.derive_urdf_config(cfg)
+
+    @classmethod
+    def create_configured_class(cls, task_name: str, mode: str, action_bounds: dict = None, urdf_path: str = None, cfg: any = None):
+        """Create a new class with specific configuration with a stable UID based on the task name.
+        
+        Using task-based UIDs (e.g., 'so101_lift') ensures absolute reproducibility and 
+        semantic clarity in logs/checkpoints.
+        """
+        # 1. Generate a stable UID based on the task name
+        new_uid = f"{cls.uid}_{task_name}"
+
+        # 2. Check if we already registered this class
+        if new_uid in _CONFIGURED_SO101_CLASSES:
+            return _CONFIGURED_SO101_CLASSES[new_uid]
+
+        # 3. Derive configurations
+        derived_urdf_config = cls.derive_urdf_config(cfg) if cfg else copy.deepcopy(cls.urdf_config)
+        
+        # 4. Create and register new class
+        class ConfiguredSO101(cls):
+            uid = new_uid
+            active_mode = mode
+            if action_bounds:
+                if mode == "dual":
+                    action_bounds_dual_arm = action_bounds
+                else:
+                    action_bounds_single_arm = action_bounds
+        
+        ConfiguredSO101.urdf_path = urdf_path or cls.urdf_path
+        ConfiguredSO101.urdf_config = derived_urdf_config
+        
+        # Register the new class so ManiSkill can find it
+        register_agent(new_uid)(ConfiguredSO101)
+        _CONFIGURED_SO101_CLASSES[new_uid] = ConfiguredSO101
+        
+        logger.info(f"Registered stable SO101: {new_uid}")
+        return ConfiguredSO101
 
     arm_joint_names = [
         "shoulder_pan",

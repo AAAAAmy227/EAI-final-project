@@ -9,25 +9,25 @@ description: 代码重构完整路线图 - 执行顺序和依赖关系
 按以下顺序串行执行，每个阶段的 workflow 在前一阶段完成后才能开始：
 
 ```
-阶段 1: 基础设施 (无依赖)
+阶段 1: 基础设施 (无依赖) ✅ 已完成
 ├── 1.1 /refactor-wrapper-traversal     ✅ 已完成
-└── 1.2 /refactor-so101-logging
+└── 1.2 /refactor-so101-logging         ✅ 已完成
 
-阶段 2: PPORunner 清理
-├── 2.1 /fix-runner-missing-methods     (修复未定义方法)
-└── 2.2 /refactor-runner-train-method   (提取子方法)
+阶段 2: PPORunner 清理 ✅ 已完成
+├── 2.1 /fix-runner-missing-methods     ✅ 已完成
+└── 2.2 /refactor-runner-train-method   ✅ 已完成
 
-阶段 3: Track1Env 重构 (最大工作量)
-├── 3.1 /refactor-track1-rewards        (拆分奖励函数)
-├── 3.2 /refactor-track1-config         (配置解析提取)
-└── 3.3 /refactor-track1-init-attrs     (修复 hasattr 检查)
+阶段 3: Track1Env 重构 ✅ 已完成
+├── 3.1 /refactor-track1-rewards        ✅ 已完成 (-691行, 34%精简)
+├── 3.2 /refactor-track1-config         ✅ 已完成 (config_utils.py)
+└── 3.3 /refactor-track1-init-attrs     ✅ 已完成 (hasattr -> Optional)
 
-阶段 4: 高级重构 (可选)
-├── 4.1 /refactor-so101-class-attrs     (类属性问题)
-└── 4.2 /refactor-make-env              (env 创建函数拆分)
+阶段 4: 高级重构 (当前阶段)
+├── 4.1 /refactor-so101-class-attrs     📝 待执行 (类属性+硬编码)
+└── 4.2 /refactor-make-env              📝 待执行 (函数拆分)
 
-阶段 5: 收尾
-└── 5.1 /refactor-extract-constants     (常量提取)
+阶段 5: 收尾 (可选)
+└── 5.1 /refactor-extract-constants     📝 待规划
 ```
 
 ## ⚙️ 依赖关系

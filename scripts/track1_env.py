@@ -173,16 +173,22 @@ class Track1Env(BaseEnv):
         self.undistortion_grid: Optional[torch.Tensor] = None
         
         # 5. SO101 Agent Setup
-        if self.task == "sort":
-            SO101.active_mode = "dual"
-        else:
-            SO101.active_mode = "single"
+        # 5. SO101 Agent Setup (Isolated by Task)
+        # Create a configured class with UID = so101_{task}
+        ConfiguredSO101 = SO101.create_configured_class(
+            task_name=self.task,
+            mode="dual" if self.task == "sort" else "single",
+            action_bounds=cfg.action_bounds,
+            urdf_path=getattr(cfg.env, 'robot_urdf', None),
+            cfg=cfg # Pass full config to derive gripper physics
+        )
+        new_uid = ConfiguredSO101.uid
         
-        if cfg.action_bounds is not None:
-            if self.task == "sort":
-                SO101.action_bounds_dual_arm = cfg.action_bounds
-            else:
-                SO101.action_bounds_single_arm = cfg.action_bounds
+        # Ensure super().__init__ uses the configured class UID
+        if isinstance(robot_uids, str):
+            if robot_uids == "so101": robot_uids = new_uid
+        elif isinstance(robot_uids, (list, tuple)):
+            robot_uids = tuple(new_uid if uid == "so101" else uid for uid in robot_uids)
         
         self.render_scale = cfg.render_scale
         self.grid_bounds = {}
