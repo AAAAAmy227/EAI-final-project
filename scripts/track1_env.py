@@ -14,6 +14,7 @@ from mani_skill.utils.structs import Actor
 from sapien.physx import PhysxRigidBodyComponent
 from sapien.render import RenderBodyComponent
 from scripts.so101 import SO101
+from scripts.training.config_utils import Track1Config
 import mani_skill.envs.utils.randomization as randomization
 
 
@@ -44,127 +45,143 @@ class Track1Env(BaseEnv):
         eval_mode: bool = False,
         **kwargs  # BaseEnv params: obs_mode, reward_mode, control_mode, sim_config, etc.
     ):
-        # Extract from cfg if provided, else use explicit params
+        # 1. Initialize Configuration
         if cfg is not None:
-            from omegaconf import OmegaConf
-            task = cfg.env.get("task", "lift")
-            domain_randomization = cfg.env.get("domain_randomization", True)
-            camera_mode = cfg.env.get("camera_mode", "direct_pinhole")
-            
-            # Reward config
-            if "reward" in cfg:
-                reward_config = OmegaConf.to_container(cfg.reward, resolve=True)
-            
-            # Physics
-            if "cube_physics" in cfg.env:
-                cube_physics = OmegaConf.to_container(cfg.env.cube_physics, resolve=True)
-            if "table_physics" in cfg.env:
-                table_physics = OmegaConf.to_container(cfg.env.table_physics, resolve=True)
-            
-            # Action bounds
-            if "control" in cfg and "action_bounds" in cfg.control:
-                action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True)
-            
-            # Camera
-            if "camera" in cfg.env:
-                if "extrinsic" in cfg.env.camera:
-                    camera_extrinsic = OmegaConf.to_container(cfg.env.camera.extrinsic, resolve=True)
-                if "undistort_alpha" in cfg.env.camera:
-                    undistort_alpha = cfg.env.camera.undistort_alpha
-            
-            # Obs normalization
-            if "obs" in cfg:
-                obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True)
-        
-        # Apply defaults for legacy mode
-        task = task or "lift"
-        domain_randomization = domain_randomization if domain_randomization is not None else True
-        camera_mode = camera_mode or "direct_pinhole"
-        undistort_alpha = undistort_alpha if undistort_alpha is not None else 0.25
-        
-        self.task = task
-        self.domain_randomization = domain_randomization
+            self.track1_cfg = Track1Config.from_hydra(cfg)
+        else:
+            # Fallback for legacy explicit params
+            self.track1_cfg = Track1Config(
+                task=task or "lift",
+                domain_randomization=domain_randomization if domain_randomization is not None else True,
+                camera_mode=camera_mode or "direct_pinhole",
+                render_scale=render_scale,
+                undistort_alpha=undistort_alpha if undistort_alpha is not None else 0.25,
+                action_bounds=action_bounds,
+                camera_extrinsic=camera_extrinsic,
+            )
+            if cube_physics: self.track1_cfg.cube_physics = cube_physics
+            if table_physics: self.track1_cfg.table_physics = table_physics
+            if obs_normalization: 
+                from scripts.training.config_utils import ObsNormalizationConfig
+                self.track1_cfg.obs = ObsNormalizationConfig(**obs_normalization)
+            if reward_config:
+                from scripts.training.config_utils import RewardConfig
+                # This is a bit complex for legacy, but from_hydra handles it better
+                self.track1_cfg = Track1Config.from_hydra({"env": {"task": self.track1_cfg.task}, "reward": reward_config})
+
+        # 2. Extract configuration to instance attributes (for parity and ease of use)
+        cfg = self.track1_cfg
+        self.task = cfg.task
+        self.domain_randomization = cfg.domain_randomization
         self.eval_mode = eval_mode
-        self.camera_extrinsic = camera_extrinsic
-        self.undistort_alpha = undistort_alpha
+        self.camera_extrinsic = cfg.camera_extrinsic
+        self.undistort_alpha = cfg.undistort_alpha
+        self.camera_mode = cfg.camera_mode
+        self.render_scale = cfg.render_scale
+        self.cube_physics = {
+            "mass": cfg.cube_physics.mass,
+            "static_friction": cfg.cube_physics.static_friction,
+            "dynamic_friction": cfg.cube_physics.dynamic_friction,
+            "restitution": cfg.cube_physics.restitution
+        }
+        self.table_physics = {
+            "static_friction": cfg.table_physics.static_friction,
+            "dynamic_friction": cfg.table_physics.dynamic_friction,
+            "restitution": cfg.table_physics.restitution
+        }
         
-        self.space_gap = 0.001 # 1mm gap for initialize because of friction
+        # 3. Observation Normalization
+        obs_cfg = cfg.obs
+        self.obs_normalize_enabled = obs_cfg.enabled
+        self.qpos_scale = obs_cfg.qpos_scale
+        self.qvel_clip = obs_cfg.qvel_clip
+        self.relative_pos_clip = obs_cfg.relative_pos_clip
+        self.include_abs_pos = obs_cfg.include_abs_pos
+        self.include_target_qpos = obs_cfg.include_target_qpos
+        self.obs_action_bounds = obs_cfg.action_bounds
+        self.tcp_pos_norm = obs_cfg.tcp_pos
+        self.red_cube_pos_norm = obs_cfg.red_cube_pos
+        self.green_cube_pos_norm = obs_cfg.green_cube_pos
+        self.include_is_grasped = obs_cfg.include_is_grasped
+        self.include_tcp_orientation = obs_cfg.include_tcp_orientation
+        self.include_cube_displacement = obs_cfg.include_cube_displacement
         
-        # Cube physics properties
-        if cube_physics is None:
-            cube_physics = {
-                "mass": 0.027,  # Default for 3cm cube
-                "static_friction": 0.6,
-                "dynamic_friction": 0.6,
-                "restitution": 0.0
-            }
-        self.cube_physics = cube_physics
+        # 4. Reward Configuration logic (formerly _setup_reward_config)
+        rw_cfg = cfg.reward
+        self.reward_type = rw_cfg.reward_type
+        self.reward_weights = rw_cfg.weights.copy()
+        self.reward_weights["fail"] = rw_cfg.weights.get("fail", 0.0)
+        self.reward_weights["approach2"] = rw_cfg.weights.get("approach2", 0.0)
+        self.reward_weights["action_rate"] = rw_cfg.weights.get("action_rate", 0.0)
         
-        # Table physics properties
-        if table_physics is None:
-            table_physics = {
-                "static_friction": 2.0,
-                "dynamic_friction": 2.0,
-                "restitution": 0.0
-            }
-        self.table_physics = table_physics
+        self.grasp_hold_max_steps = rw_cfg.grasp_hold_max_steps
+        self.approach_curve = rw_cfg.approach_curve
+        self.approach_threshold = rw_cfg.approach_threshold
+        self.approach_zero_point = rw_cfg.approach_zero_point
+        self.approach_tanh_scale = rw_cfg.approach_tanh_scale
+        self.approach_scale = rw_cfg.approach_scale
+        self.reach_scale = self.approach_scale
+        self.approach_mode = rw_cfg.approach_mode
+        self.gripper_tip_offset = rw_cfg.gripper_tip_offset
+        self.gripper_outward_offset = rw_cfg.gripper_outward_offset
+        self.stage_thresholds = rw_cfg.stage_thresholds
+        
+        self.lift_target = rw_cfg.lift_target
+        self.lift_max_height = rw_cfg.lift_max_height
+        self.stable_hold_time = rw_cfg.stable_hold_time
+        control_freq = getattr(self, 'control_freq', 30)
+        self.stable_hold_steps = int(self.stable_hold_time * control_freq)
+        
+        self.fail_bounds = rw_cfg.fail_bounds
+        self.spawn_bounds = rw_cfg.spawn_bounds
+        
+        self.moving_jaw_tip_offset = rw_cfg.moving_jaw_tip_offset
+        self.moving_jaw_outward_offset = rw_cfg.moving_jaw_outward_offset
+        self.approach2_threshold = rw_cfg.approach2_threshold
+        self.approach2_zero_point = rw_cfg.approach2_zero_point
+        
+        self.horizontal_displacement_threshold = rw_cfg.horizontal_displacement_threshold
+        self.grasp_min_force = rw_cfg.grasp_min_force
+        self.grasp_max_angle = rw_cfg.grasp_max_angle
+        
+        self.adaptive_grasp_enabled = rw_cfg.adaptive_grasp_weight.enabled
+        self.adaptive_grasp_alpha = rw_cfg.adaptive_grasp_weight.alpha
+        self.adaptive_grasp_eps = rw_cfg.adaptive_grasp_weight.eps
+        self.adaptive_grasp_max = rw_cfg.adaptive_grasp_weight.max_weight
+        self.adaptive_grasp_tau = rw_cfg.adaptive_grasp_weight.tau
+        
+        self.gate_lift_with_grasp = rw_cfg.gate_lift_with_grasp
+        
+        self.adaptive_lift_enabled = rw_cfg.adaptive_lift_weight.enabled
+        self.adaptive_lift_alpha = rw_cfg.adaptive_lift_weight.alpha
+        self.adaptive_lift_eps = rw_cfg.adaptive_lift_weight.eps
+        self.adaptive_lift_max = rw_cfg.adaptive_lift_weight.max_weight
+        self.adaptive_lift_tau = rw_cfg.adaptive_lift_weight.tau
+        
+        self.adaptive_success_enabled = rw_cfg.adaptive_success_weight.enabled
+        self.adaptive_success_alpha = rw_cfg.adaptive_success_weight.alpha
+        self.adaptive_success_eps = rw_cfg.adaptive_success_weight.eps
+        self.adaptive_success_max = rw_cfg.adaptive_success_weight.max_weight
+        self.adaptive_success_tau = rw_cfg.adaptive_success_weight.tau
 
-        # Obs normalization config
-        if obs_normalization is None:
-            obs_normalization = {}
-        self.obs_normalize_enabled = obs_normalization.get("enabled", False)
-        # qpos normalization scale (default π)
-        self.qpos_scale = obs_normalization.get("qpos_scale", np.pi)
-        # Per-joint qvel clip ranges
-        self.qvel_clip = obs_normalization.get("qvel_clip", [1.0, 2.5, 2.0, 1.0, 0.6, 1.5])
-        # Relative position clip (tcp_to_red_pos, etc.)
-        self.relative_pos_clip = obs_normalization.get("relative_pos_clip", 0.5)
-        # Whether to include absolute positions in obs
-        self.include_abs_pos = obs_normalization.get("include_abs_pos", True)
-        # How to include target_qpos: True, False, or "relative" (target_qpos - qpos)
-        self.include_target_qpos = obs_normalization.get("include_target_qpos", True)
-        # Action bounds for relative target_qpos normalization (synced from control config)
-        # Format: dict with joint names as keys (e.g., {"shoulder_pan": 0.044, ...})
-        self.obs_action_bounds = obs_normalization.get("action_bounds", None)
-        # Position normalization params: (pos - mean) / std
-        self.tcp_pos_norm = obs_normalization.get("tcp_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
-        self.red_cube_pos_norm = obs_normalization.get("red_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
-        self.green_cube_pos_norm = obs_normalization.get("green_cube_pos", {"mean": [0.3, 0.3, 0.2], "std": [0.1, 0.1, 0.1]})
-        # Include is_grasped in observations (0/1 -> -1/1)
-        self.include_is_grasped = obs_normalization.get("include_is_grasped", False)
-        # Include TCP orientation (quaternion)
-        self.include_tcp_orientation = obs_normalization.get("include_tcp_orientation", False)
-        # Include cube displacement from initial position
-        self.include_cube_displacement = obs_normalization.get("include_cube_displacement", False)
-
-        self.render_scale = render_scale
+        self.prev_action = None
+        self.space_gap = 0.001 
+        self.single_arm_mode = (self.task != "sort")
         
-        # Set SO101 action mode based on task BEFORE agent creation
-        # This affects the action bounds used in the controller configs
-        if task == "sort":
+        # 5. SO101 Agent Setup
+        if self.task == "sort":
             SO101.active_mode = "dual"
         else:
             SO101.active_mode = "single"
         
-        # Override action bounds if provided from config
-        if action_bounds is not None:
-            if task == "sort":
-                SO101.action_bounds_dual_arm = action_bounds
+        if cfg.action_bounds is not None:
+            if self.task == "sort":
+                SO101.action_bounds_dual_arm = cfg.action_bounds
             else:
-                SO101.action_bounds_single_arm = action_bounds
+                SO101.action_bounds_single_arm = cfg.action_bounds
         
-        # Setup reward configuration (default values if not provided)
-        self._setup_reward_config(reward_config)
-        
-        # Validate camera_mode
-        valid_modes = ["distorted", "distort-twice", "direct_pinhole"]
-        if camera_mode not in valid_modes:
-            raise ValueError(f"camera_mode must be one of {valid_modes}, got '{camera_mode}'")
-        self.camera_mode = camera_mode
-        
-        self.grid_bounds = {}  # Will be populated in _compute_grids
-
-        # Precompute camera processing maps if needed (after super init so device is ready)
+        self.render_scale = cfg.render_scale
+        self.grid_bounds = {}
         self._setup_camera_processing_maps()
         
         self.task_handler = self._create_task_handler(self.task)
@@ -200,144 +217,6 @@ class Track1Env(BaseEnv):
         obs_numpy = ms_common.to_numpy(obs_dict)
         return gym_utils.convert_observation_to_space(obs_numpy, unbatched=True)
         
-    def _setup_reward_config(self, reward_config):
-        """Setup reward configuration with defaults."""
-        if reward_config is None:
-            reward_config = {}
-        
-        # Reward type: "parallel" or "staged"
-        self.reward_type = reward_config.get("reward_type", "staged")
-        
-        # Weights (new naming scheme with backward compatibility)
-        weights = reward_config.get("weights", {})
-        self.reward_weights = {
-            # New style
-            "approach": weights.get("approach", weights.get("reach", 1.0)),
-            "horizontal_displacement": weights.get("horizontal_displacement", 0.0),
-            "lift": weights.get("lift", 5.0),
-            "hold_progress": weights.get("hold_progress", 0.0),
-            "grasp_hold": weights.get("grasp_hold", 0.0),
-            "success": weights.get("success", 10.0),
-            # Legacy (for backward compatibility)
-            "reach": weights.get("reach", weights.get("approach", 1.0)),
-            "grasp": weights.get("grasp", 0.0),
-        }
-        
-        # Grasp hold settings
-        self.grasp_hold_max_steps = reward_config.get("grasp_hold_max_steps", 30)
-        
-        # Approach reward curve type: "linear" (piecewise) or "tanh"
-        self.approach_curve = reward_config.get("approach_curve", "linear")
-        
-        # Linear curve parameters
-        self.approach_threshold = reward_config.get("approach_threshold", 0.01)  # Full reward within this distance (1cm)
-        self.approach_zero_point = reward_config.get("approach_zero_point", 0.20)  # Zero reward at this distance (20cm)
-        
-        # Tanh curve parameters: reward = 1 - tanh(distance / scale)
-        self.approach_tanh_scale = reward_config.get("approach_tanh_scale", 0.05)
-        
-        # Legacy scaling (kept for backward compatibility, not used with piecewise)
-        self.approach_scale = reward_config.get("approach_scale", reward_config.get("reach_scale", 5.0))
-        self.reach_scale = self.approach_scale
-        
-        # Approach mode: 'tcp_midpoint' (single TCP center) or 'dual_point' (separate fixed/moving jaw)
-        self.approach_mode = reward_config.get("approach_mode", "dual_point")
-        
-        # Gripper reference point offsets (only used in dual_point mode)
-        self.gripper_tip_offset = reward_config.get("gripper_tip_offset", 0.015)  # Along jaw, back from tip (1.5cm)
-        self.gripper_outward_offset = reward_config.get("gripper_outward_offset", 0.015)  # Perpendicular, outward for cube thickness (1.5cm)
-        
-        # Stage thresholds
-        stages = reward_config.get("stages", {})
-        self.stage_thresholds = {
-            "approach": stages.get("approach_threshold", stages.get("reach_threshold", 0.05)),
-            "reach": stages.get("reach_threshold", stages.get("approach_threshold", 0.05)),
-            "grasp": stages.get("grasp_threshold", 0.03),
-            "lift": stages.get("lift_target", 0.05),
-        }
-        
-        # Lift success config: cube must stay above lift_target for stable_hold_time
-        self.lift_target = reward_config.get("lift_target", 0.05)  # 5cm default
-        self.lift_max_height = reward_config.get("lift_max_height", None)  # Cap for lift reward (None = no cap)
-        self.stable_hold_time = reward_config.get("stable_hold_time", 0.0)  # 0 = instant success
-        # Convert hold time to steps (at control_freq, default 30 Hz)
-        control_freq = getattr(self, 'control_freq', 30)
-        self.stable_hold_steps = int(self.stable_hold_time * control_freq)
-        
-        # Fail bounds: cube XY must stay within this rectangle
-        fail_bounds = reward_config.get("fail_bounds", None)
-        if fail_bounds:
-            self.fail_bounds = {
-                "x_min": fail_bounds.get("x_min", 0.0),
-                "x_max": fail_bounds.get("x_max", 1.0),
-                "y_min": fail_bounds.get("y_min", 0.0),
-                "y_max": fail_bounds.get("y_max", 1.0),
-            }
-        else:
-            self.fail_bounds = None
-        
-        # Fail penalty weight
-        self.reward_weights["fail"] = weights.get("fail", 0.0)
-        
-        # Spawn bounds: where the red cube is randomly spawned
-        spawn_bounds = reward_config.get("spawn_bounds", None)
-        if spawn_bounds:
-            self.spawn_bounds = {
-                "x_min": spawn_bounds.get("x_min", 0.35),
-                "x_max": spawn_bounds.get("x_max", 0.55),
-                "y_min": spawn_bounds.get("y_min", 0.15),
-                "y_max": spawn_bounds.get("y_max", 0.35),
-            }
-        else:
-            self.spawn_bounds = None  # Will use grid_bounds["right"] as default
-        
-        # Moving jaw (approach2) reference point config
-        self.reward_weights["approach2"] = weights.get("approach2", 0.0)
-        self.moving_jaw_tip_offset = reward_config.get("moving_jaw_tip_offset", 0.015)
-        self.moving_jaw_outward_offset = reward_config.get("moving_jaw_outward_offset", 0.01)
-        self.approach2_threshold = reward_config.get("approach2_threshold", 0.01)
-        self.approach2_zero_point = reward_config.get("approach2_zero_point", 0.20)
-        
-        # Action rate penalty (anti-jitter)
-        self.reward_weights["action_rate"] = weights.get("action_rate", 0.0)
-        self.prev_action = None  # Will be initialized on first step
-        
-        # Horizontal displacement threshold: only penalize moves > threshold
-        self.horizontal_displacement_threshold = reward_config.get("horizontal_displacement_threshold", 0.0)
-        
-        # Grasp detection parameters (for is_grasping)
-        self.grasp_min_force = reward_config.get("grasp_min_force", 0.5)
-        self.grasp_max_angle = reward_config.get("grasp_max_angle", 110)
-        
-        # Adaptive grasp weight: scale by inverse success rate
-        # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
-        adaptive_cfg = reward_config.get("adaptive_grasp_weight", {})
-        self.adaptive_grasp_enabled = adaptive_cfg.get("enabled", False)
-        self.adaptive_grasp_alpha = adaptive_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
-        self.adaptive_grasp_eps = adaptive_cfg.get("eps", 0.01)     # Floor for success rate
-        self.adaptive_grasp_max = adaptive_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
-        self.adaptive_grasp_tau = adaptive_cfg.get("tau", 0.01)     # EMA decay for tracking
-
-        # Gated lift reward: only give lift reward when is_grasped=True
-        self.gate_lift_with_grasp = reward_config.get("gate_lift_with_grasp", False)
-
-        # Adaptive lift weight: scale by inverse success rate (same logic as grasp)
-        # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
-        adaptive_lift_cfg = reward_config.get("adaptive_lift_weight", {})
-        self.adaptive_lift_enabled = adaptive_lift_cfg.get("enabled", False)
-        self.adaptive_lift_alpha = adaptive_lift_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
-        self.adaptive_lift_eps = adaptive_lift_cfg.get("eps", 0.01)     # Floor for success rate
-        self.adaptive_lift_max = adaptive_lift_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
-        self.adaptive_lift_tau = adaptive_lift_cfg.get("tau", 0.01)     # EMA decay for tracking
-        
-        # Adaptive success weight: scale by inverse success rate (same logic as grasp/lift)
-        adaptive_success_cfg = reward_config.get("adaptive_success_weight", {})
-        self.adaptive_success_enabled = adaptive_success_cfg.get("enabled", False)
-        self.adaptive_success_alpha = adaptive_success_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
-        self.adaptive_success_eps = adaptive_success_cfg.get("eps", 0.01)     # Floor for success rate
-        self.adaptive_success_max = adaptive_success_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
-        self.adaptive_success_tau = adaptive_success_cfg.get("tau", 0.01)     # EMA decay for tracking
-
 
 
     def _setup_device(self):

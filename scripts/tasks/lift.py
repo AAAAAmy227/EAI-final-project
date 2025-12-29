@@ -1,7 +1,7 @@
 import torch
 from typing import Dict, Optional
 from scripts.tasks.base import BaseTaskHandler
-from mani_skill.utils import randomization
+from mani_skill.envs.utils import randomization
 from mani_skill.utils.structs.pose import Pose
 
 class LiftTaskHandler(BaseTaskHandler):
