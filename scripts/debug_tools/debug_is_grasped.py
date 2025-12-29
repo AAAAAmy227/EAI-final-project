@@ -10,7 +10,7 @@ def main(cfg: DictConfig):
     cfg.env.task = "lift"
     
     # Create env
-    from scripts.training.common import OmegaConf
+    from scripts.training.env_utils import OmegaConf
     reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True) if "control" in cfg else None
     obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True) if "obs" in cfg else None

@@ -3,7 +3,7 @@ import os
 import torch
 import gymnasium as gym
 from omegaconf import OmegaConf
-from scripts.training.common import make_env
+from scripts.training.env_utils import make_env
 
 def debug_env():
     # Load a representative config

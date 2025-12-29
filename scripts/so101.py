@@ -1,7 +1,6 @@
 import numpy as np
 import copy
 import sapien
-from transforms3d.euler import euler2quat
 
 from mani_skill import PACKAGE_ASSET_DIR
 from mani_skill.agents.base_agent import BaseAgent, Keyframe
@@ -95,6 +94,7 @@ class SO101(BaseAgent):
     gripper_joint_names = [
         "gripper",
     ]
+    JOINT_NAMES = arm_joint_names + gripper_joint_names
     
     @property
     def _active_action_bounds(self):
@@ -128,7 +128,7 @@ class SO101(BaseAgent):
         
         # Get per-joint action bounds based on active mode
         bounds = self._active_action_bounds
-        joint_order = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        joint_order = self.JOINT_NAMES
         lower = [-bounds[j] for j in joint_order]
         upper = [bounds[j] for j in joint_order]
         

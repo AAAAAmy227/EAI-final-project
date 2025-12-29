@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from scripts.training.common import make_env
+from scripts.training.env_utils import make_env
 
 def print_obs_structure(obs, prefix=""):
     if isinstance(obs, dict):
@@ -34,14 +34,14 @@ def main(cfg: DictConfig):
     # If it's FlattenStateWrapper, it's already a tensor.
     
     # Let's manually create one WITHOUT wrapper
-    from scripts.training.common import make_env as original_make_env
+    from scripts.training.env_utils import make_env as original_make_env
     # We'll monkeypatch or just use the logic
     
     import gymnasium as gym
-    from scripts.training.common import FlattenStateWrapper
+    from scripts.training.env_utils import FlattenStateWrapper
     
     # Create env without wrapper
-    from scripts.training.common import OmegaConf
+    from scripts.training.env_utils import OmegaConf
     reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True) if "control" in cfg else None
     obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True) if "obs" in cfg else None

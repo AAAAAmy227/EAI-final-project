@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from scripts.training.common import make_env
+from scripts.training.env_utils import make_env
 
 def print_obs_keys(obs, prefix=""):
     if isinstance(obs, dict):

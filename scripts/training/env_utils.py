@@ -13,8 +13,9 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 # Import Track1 environment
 try:
     from scripts.track1_env import Track1Env
+    from scripts.so101 import SO101
 except ImportError as e:
-    raise UsageError("Track1 environment not found. Please run `uv run -m scripts.track1_env` to iresolve it.") from e
+    raise RuntimeError(f"Required modules not found: {e}, Track1 environment not found. Please run `uv run -m scripts.track1_env` to iresolve it.") from e
 
 
 class RunningMeanStd:
@@ -207,11 +208,12 @@ class FlattenActionWrapper(gym.ActionWrapper):
         self._leaf_info = [] # List of (key, start, end, original_shape)
         
         start_idx = 0
-        # Determine joint names from the agent if possible
-        # For ManiSkill Track1, we know the SO101 joint order
-        joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        # Use centralized joint names from SO101
+        joint_names = SO101.JOINT_NAMES
         
-        for k, space in self.env.single_action_space.items():
+        # Use sorted keys to ensure deterministic flattened ordering
+        for k in sorted(self.env.single_action_space.keys()):
+            space = self.env.single_action_space[k]
             dim = int(np.prod(space.shape))
             end_idx = start_idx + dim
             
@@ -310,8 +312,9 @@ class FlattenStateWrapper(gym.ObservationWrapper):
     def _discover_structure(self, obs, path=()):
         """Recursively walk the dict to find tensors and record their paths/names."""
         if isinstance(obs, dict):
-            # Respect dictionary insertion order (consistent with ManiSkill)
-            for key, value in obs.items():
+            # Use sorted keys for maximum reproducibility across environments/versions
+            for key in sorted(obs.keys()):
+                value = obs[key]
                 self._discover_structure(value, path + (key,))
         else:
             # Leaf tensor

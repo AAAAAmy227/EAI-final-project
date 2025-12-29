@@ -4,14 +4,14 @@ import torch
 import gymnasium as gym
 import hydra
 from omegaconf import DictConfig
-from scripts.training.common import make_env
+from scripts.training.env_utils import make_env
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train")
 def main(cfg: DictConfig):
     cfg.env.task = "lift"
     
     # Create env without video/wrappers for speed
-    from scripts.training.common import OmegaConf
+    from scripts.training.env_utils import OmegaConf
     reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True) if "control" in cfg else None
     obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True) if "obs" in cfg else None

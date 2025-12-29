@@ -45,7 +45,7 @@ def main(cfg: DictConfig):
     torch.backends.cudnn.deterministic = True
     
     # Import here to avoid slow imports when just checking usage
-    from scripts.training.common import make_env
+    from scripts.training.env_utils import make_env
     from scripts.training.agent import Agent
     from scripts.training.runner import PPORunner
     

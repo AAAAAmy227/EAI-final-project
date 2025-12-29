@@ -4,7 +4,7 @@ import torch
 import gymnasium as gym
 import hydra
 from omegaconf import DictConfig
-from scripts.training.common import make_env
+from scripts.training.env_utils import make_env
 
 def get_obs_mapping(space, prefix=""):
     mapping = []
@@ -24,7 +24,7 @@ def main(cfg: DictConfig):
     
     # We need to see the DICT space
     # make_env flattens it, so we need to look at the underlying env
-    from scripts.training.common import OmegaConf
+    from scripts.training.env_utils import OmegaConf
     reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True) if "control" in cfg else None
     obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True) if "obs" in cfg else None

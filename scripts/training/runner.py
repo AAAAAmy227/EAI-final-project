@@ -30,7 +30,7 @@ from tensordict import from_module
 from tensordict.nn import CudaGraphModule
 
 from scripts.training.agent import Agent
-from scripts.training.common import make_env
+from scripts.training.env_utils import make_env
 from scripts.training.ppo_utils import optimized_gae, make_ppo_update_fn
 
 class PPORunner:
@@ -153,7 +153,7 @@ class PPORunner:
         self.normalize_reward = self.cfg.get("normalize_reward", False)
         self.reward_clip = self.cfg.get("reward_clip", 10.0)
         if self.normalize_reward:
-            from scripts.training.common import NormalizeRewardGPU
+            from scripts.training.env_utils import NormalizeRewardGPU
             self.envs = NormalizeRewardGPU(
                 self.envs, device=self.device, gamma=self.cfg.ppo.gamma, clip=self.reward_clip
             )
@@ -164,7 +164,7 @@ class PPORunner:
         self.normalize_obs = self.cfg.get("normalize_obs", False)
         self.obs_clip = self.cfg.get("obs_clip", 10.0)
         if self.normalize_obs:
-            from scripts.training.common import NormalizeObservationGPU
+            from scripts.training.env_utils import NormalizeObservationGPU
             self.envs = NormalizeObservationGPU(
                 self.envs, device=self.device, clip=self.obs_clip
             )
@@ -249,7 +249,7 @@ class PPORunner:
         Traverses the wrapper chain to find FlattenStateWrapper and return its obs_names.
         Falls back to generic naming if not found.
         """
-        from scripts.training.common import FlattenStateWrapper
+        from scripts.training.env_utils import FlattenStateWrapper
         
         # Traverse wrapper chain to find FlattenStateWrapper
         curr_env = self.envs
@@ -274,7 +274,7 @@ class PPORunner:
         Traverses the wrapper chain to find FlattenActionWrapper and return its action_names.
         Falls back to generic naming if not found.
         """
-        from scripts.training.common import FlattenActionWrapper
+        from scripts.training.env_utils import FlattenActionWrapper
         
         # Traverse wrapper chain to find FlattenActionWrapper
         curr_env = self.envs
@@ -295,7 +295,7 @@ class PPORunner:
 
     def _initialize_obs_stats_from_config(self):
         """Initialize obs RMS from environment config."""
-        from scripts.training.common import NormalizeObservationGPU
+        from scripts.training.env_utils import NormalizeObservationGPU
         
         # Find NormalizeObservationGPU wrapper
         obs_wrapper = None
@@ -598,7 +598,7 @@ class PPORunner:
                         logs["obs_normalized/min"] = norm_obs_clipped.min().item()
                         logs["obs_normalized/max"] = norm_obs_clipped.max().item()
                     
-                    from scripts.training.common import NormalizeObservationGPU, NormalizeRewardGPU
+                    from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU
                     
                     # Log Observation statistics from wrapper
                     obs_wrapper = None
@@ -894,7 +894,7 @@ class PPORunner:
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
         if self.cfg.save_model:
-            from scripts.training.common import NormalizeObservationGPU, NormalizeRewardGPU
+            from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
             model_path = output_dir / f"iteration_{iteration}.pt"
             
