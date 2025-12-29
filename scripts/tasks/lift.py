@@ -9,16 +9,9 @@ class LiftTaskHandler(BaseTaskHandler):
         super().__init__(env)
         
         # Adaptive states (EMA)
-        self.grasp_success_rate = None
-        self.lift_success_rate = None
-        self.task_success_rate = None
-        
-        # Internal counters
-        self.lift_hold_counter = None
-        self.grasp_hold_counter = None
-        self.prev_action = None
-        self.initial_red_cube_pos = None
-        self.initial_cube_xy = None
+        self.grasp_success_rate: Optional[torch.Tensor] = None
+        self.lift_success_rate: Optional[torch.Tensor] = None
+        self.task_success_rate: Optional[torch.Tensor] = None
 
     def initialize_episode(self, env_idx, options):
         b = len(env_idx)
@@ -34,7 +27,7 @@ class LiftTaskHandler(BaseTaskHandler):
         
         # Store initial cube XY for horizontal penalty in reward
         if self.initial_cube_xy is None:
-            self.initial_cube_xy = torch.zeros(self.env.num_envs, 2, device=self.device)
+            self.initial_cube_xy = torch.zeros((self.env.num_envs, 2), device=self.device)
         self.initial_cube_xy[env_idx] = red_pos[:, :2]
         
         # Reset stable hold counter for success condition

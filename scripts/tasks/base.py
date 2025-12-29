@@ -8,6 +8,12 @@ if TYPE_CHECKING:
 class BaseTaskHandler(ABC):
     def __init__(self, env: 'Track1Env'):
         self.env = env
+        self.initial_red_cube_pos: Optional[torch.Tensor] = None
+        self.initial_green_cube_pos: Optional[torch.Tensor] = None
+        self.initial_cube_xy: Optional[torch.Tensor] = None
+        self.lift_hold_counter: Optional[torch.Tensor] = None
+        self.grasp_hold_counter: Optional[torch.Tensor] = None
+        self.prev_action: Optional[torch.Tensor] = None
 
     @property
     def device(self):

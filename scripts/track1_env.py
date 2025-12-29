@@ -168,6 +168,10 @@ class Track1Env(BaseEnv):
         self.space_gap = 0.001 
         self.single_arm_mode = (self.task != "sort")
         
+        # 4.5 Initialize Camera Grids
+        self.distortion_grid: Optional[torch.Tensor] = None
+        self.undistortion_grid: Optional[torch.Tensor] = None
+        
         # 5. SO101 Agent Setup
         if self.task == "sort":
             SO101.active_mode = "dual"
@@ -220,10 +224,10 @@ class Track1Env(BaseEnv):
 
 
     def _setup_device(self):
-        assert hasattr(self, 'device')
-        if hasattr(self, 'distortion_grid'):
+        # self.device is guaranteed by BaseEnv
+        if self.distortion_grid is not None:
             self.distortion_grid = self.distortion_grid.to(self.device)
-        if hasattr(self, 'undistortion_grid'):
+        if self.undistortion_grid is not None:
             self.undistortion_grid = self.undistortion_grid.to(self.device)
 
     def _setup_camera_processing_maps(self):
@@ -333,7 +337,7 @@ class Track1Env(BaseEnv):
             return obs  # No processing needed
         
         # Skip if grids not yet initialized (happens during parent __init__ reset)
-        if not hasattr(self, 'distortion_grid'):
+        if self.distortion_grid is None:
             return obs
         
         # Find the RGB tensor - could be in 'sensor_data' or 'image'
@@ -424,7 +428,7 @@ class Track1Env(BaseEnv):
             # Default look_at parameters
             pose = sapien_utils.look_at(eye=[0.316, 0.260, 0.407], target=[0.316, 0.260, 0.0], up=[0, -1, 0])
         
-        if self.domain_randomization and hasattr(self, 'num_envs') and self.num_envs > 1:
+        if self.domain_randomization and getattr(self, "num_envs", 0) > 1:
             # base_pose = sapien.Pose(p=base_pos, q=q_sapien)
             # pose = Pose.create(base_pose)
             
@@ -624,7 +628,7 @@ class Track1Env(BaseEnv):
         obs["red_cube_rot"] = self.red_cube.pose.q
         
         # 1a. Cube Displacement (Relative to initial spawn position)
-        initial_red_cube_pos = getattr(self.task_handler, "initial_red_cube_pos", None)
+        initial_red_cube_pos = self.task_handler.initial_red_cube_pos
         if self.include_cube_displacement and initial_red_cube_pos is not None:
             red_disp = red_cube_pos - initial_red_cube_pos
             if self.obs_normalize_enabled:
@@ -637,7 +641,7 @@ class Track1Env(BaseEnv):
             green_cube_pos = self.green_cube.pose.p
             obs["green_cube_rot"] = self.green_cube.pose.q
             
-            initial_green_cube_pos = getattr(self.task_handler, "initial_green_cube_pos", None)
+            initial_green_cube_pos = self.task_handler.initial_green_cube_pos
             if self.include_cube_displacement and initial_green_cube_pos is not None:
                 green_disp = green_cube_pos - initial_green_cube_pos
                 if self.obs_normalize_enabled:
@@ -1272,14 +1276,14 @@ class Track1Env(BaseEnv):
         ref_pos = gripper_frame.pose.p.clone()
         
         # Apply tip offset (back along jaw direction)
-        if hasattr(self, 'gripper_tip_offset') and self.gripper_tip_offset != 0 and gripper_link is not None:
+        if self.gripper_tip_offset != 0 and gripper_link is not None:
             jaw_direction = gripper_frame.pose.p - gripper_link.pose.p
             jaw_length = torch.norm(jaw_direction, dim=1, keepdim=True)
             jaw_unit = jaw_direction / (jaw_length + 1e-6)
             ref_pos = ref_pos - jaw_unit * self.gripper_tip_offset
         
         # Apply outward offset (towards moving jaw, perpendicular to fixed jaw)
-        if hasattr(self, 'gripper_outward_offset') and self.gripper_outward_offset != 0 and moving_jaw is not None:
+        if self.gripper_outward_offset != 0 and moving_jaw is not None:
             outward_direction = moving_jaw.pose.p - gripper_frame.pose.p
             outward_length = torch.norm(outward_direction, dim=1, keepdim=True)
             outward_unit = outward_direction / (outward_length + 1e-6)
@@ -1342,11 +1346,11 @@ class Track1Env(BaseEnv):
         ref_pos = moving_jaw_base + jaw_direction * tip_dist
         
         # Apply tip offset (back along jaw direction)
-        if hasattr(self, 'moving_jaw_tip_offset') and self.moving_jaw_tip_offset != 0:
+        if self.moving_jaw_tip_offset != 0:
             ref_pos = ref_pos - jaw_direction * self.moving_jaw_tip_offset
         
         # Apply outward offset (along local -X, towards cube center)
-        if hasattr(self, 'moving_jaw_outward_offset') and self.moving_jaw_outward_offset != 0:
+        if self.moving_jaw_outward_offset != 0:
             local_minus_x = torch.tensor([-1.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
             outward_dir = torch.stack([
                 R00 * local_minus_x[0] + R01 * local_minus_x[1] + R02 * local_minus_x[2],

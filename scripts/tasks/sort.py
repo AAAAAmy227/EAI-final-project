@@ -14,9 +14,9 @@ class SortTaskHandler(BaseTaskHandler):
         self.env.green_cube.set_pose(Pose.create_from_pq(p=green_pos, q=green_quat))
         
         # Store initial cube full poses
-        if not hasattr(self, "initial_red_cube_pos"):
+        if self.initial_red_cube_pos is None:
             self.initial_red_cube_pos = torch.zeros((self.env.num_envs, 3), device=self.device)
-        if not hasattr(self, "initial_green_cube_pos"):
+        if self.initial_green_cube_pos is None:
             self.initial_green_cube_pos = torch.zeros((self.env.num_envs, 3), device=self.device)
         
         self.initial_red_cube_pos[env_idx] = red_pos
