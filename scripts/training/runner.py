@@ -249,20 +249,11 @@ class PPORunner:
         Traverses the wrapper chain to find FlattenStateWrapper and return its obs_names.
         Falls back to generic naming if not found.
         """
-        from scripts.training.env_utils import FlattenStateWrapper
+        from scripts.training.env_utils import FlattenStateWrapper, find_wrapper
         
-        # Traverse wrapper chain to find FlattenStateWrapper
-        curr_env = self.envs
-        while curr_env is not None:
-            if isinstance(curr_env, FlattenStateWrapper):
-                return curr_env.obs_names
-            # Try to go deeper in wrapper chain
-            if hasattr(curr_env, "_env"):
-                curr_env = curr_env._env
-            elif hasattr(curr_env, "env"):
-                curr_env = curr_env.env
-            else:
-                break
+        wrapper = find_wrapper(self.envs, FlattenStateWrapper)
+        if wrapper is not None:
+            return wrapper.obs_names
         
         # Fallback to generic names
         print("Warning: FlattenStateWrapper not found, using generic obs names")
@@ -274,20 +265,11 @@ class PPORunner:
         Traverses the wrapper chain to find FlattenActionWrapper and return its action_names.
         Falls back to generic naming if not found.
         """
-        from scripts.training.env_utils import FlattenActionWrapper
+        from scripts.training.env_utils import FlattenActionWrapper, find_wrapper
         
-        # Traverse wrapper chain to find FlattenActionWrapper
-        curr_env = self.envs
-        while curr_env is not None:
-            if isinstance(curr_env, FlattenActionWrapper):
-                return curr_env.action_names
-            # Try to go deeper in wrapper chain
-            if hasattr(curr_env, "_env"):
-                curr_env = curr_env._env
-            elif hasattr(curr_env, "env"):
-                curr_env = curr_env.env
-            else:
-                break
+        wrapper = find_wrapper(self.envs, FlattenActionWrapper)
+        if wrapper is not None:
+            return wrapper.action_names
         
         # Fallback to generic names
         print("Warning: FlattenActionWrapper not found, using generic action names")
@@ -295,16 +277,10 @@ class PPORunner:
 
     def _initialize_obs_stats_from_config(self):
         """Initialize obs RMS from environment config."""
-        from scripts.training.env_utils import NormalizeObservationGPU
+        from scripts.training.env_utils import NormalizeObservationGPU, find_wrapper
         
         # Find NormalizeObservationGPU wrapper
-        obs_wrapper = None
-        curr_env = self.envs
-        while curr_env is not None:
-            if isinstance(curr_env, NormalizeObservationGPU):
-                obs_wrapper = curr_env
-                break
-            curr_env = getattr(curr_env, "env", None)
+        obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
             
         if obs_wrapper is None:
             return
@@ -598,16 +574,10 @@ class PPORunner:
                         logs["obs_normalized/min"] = norm_obs_clipped.min().item()
                         logs["obs_normalized/max"] = norm_obs_clipped.max().item()
                     
-                    from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU
+                    from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
                     
                     # Log Observation statistics from wrapper
-                    obs_wrapper = None
-                    curr_env = self.envs
-                    while curr_env is not None:
-                        if isinstance(curr_env, NormalizeObservationGPU):
-                            obs_wrapper = curr_env
-                            break
-                        curr_env = getattr(curr_env, "env", None)
+                    obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
                     
                     if obs_wrapper is not None:
                         obs_rms = obs_wrapper.rms
@@ -618,13 +588,7 @@ class PPORunner:
                                 logs[f"obs_rms_std/{name}"] = obs_rms_std[i].item()
 
                     # Log Reward statistics from wrapper
-                    reward_wrapper = None
-                    curr_env = self.envs
-                    while curr_env is not None:
-                        if isinstance(curr_env, NormalizeRewardGPU):
-                            reward_wrapper = curr_env
-                            break
-                        curr_env = getattr(curr_env, "env", None)
+                    reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
                     
                     if reward_wrapper is not None:
                         r_rms = reward_wrapper.rms
@@ -894,20 +858,13 @@ class PPORunner:
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
         if self.cfg.save_model:
-            from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU
+            from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
             model_path = output_dir / f"iteration_{iteration}.pt"
             
             # Find wrappers to extract stats
-            obs_wrapper = None
-            reward_wrapper = None
-            curr_env = self.envs
-            while curr_env is not None:
-                if isinstance(curr_env, NormalizeObservationGPU):
-                    obs_wrapper = curr_env
-                elif isinstance(curr_env, NormalizeRewardGPU):
-                    reward_wrapper = curr_env
-                curr_env = getattr(curr_env, "env", None)
+            obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
+            reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
 
             state = {
                 "agent": self.agent.state_dict(),

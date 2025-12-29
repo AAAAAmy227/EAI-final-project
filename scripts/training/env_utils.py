@@ -18,6 +18,34 @@ except ImportError as e:
     raise RuntimeError(f"Required modules not found: {e}, Track1 environment not found. Please run `uv run -m scripts.track1_env` to iresolve it.") from e
 
 
+from typing import TypeVar, Optional, Type
+
+T = TypeVar('T')
+
+def find_wrapper(env, wrapper_type: Type[T]) -> Optional[T]:
+    """Traverse wrapper chain to find a specific wrapper type.
+    
+    Args:
+        env: The wrapped environment to search from (outermost wrapper)
+        wrapper_type: The wrapper class to find
+        
+    Returns:
+        The wrapper instance if found, None otherwise
+        
+    Example:
+        >>> obs_wrapper = find_wrapper(envs, NormalizeObservationGPU)
+        >>> if obs_wrapper is not None:
+        ...     print(obs_wrapper.rms.mean)
+    """
+    curr = env
+    while curr is not None:
+        if isinstance(curr, wrapper_type):
+            return curr
+        # Try common wrapper attribute names
+        curr = getattr(curr, "env", getattr(curr, "_env", None))
+    return None
+
+
 class RunningMeanStd:
     """GPU-compatible running mean and standard deviation tracker."""
     
