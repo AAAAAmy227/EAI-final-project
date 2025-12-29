@@ -167,8 +167,22 @@ class Track1Env(BaseEnv):
         # Precompute camera processing maps if needed (after super init so device is ready)
         self._setup_camera_processing_maps()
         
+        self.task_handler = self._create_task_handler(self.task)
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
         self._setup_device()
+
+    def _create_task_handler(self, task):
+        if task == "lift":
+            from scripts.tasks.lift import LiftTaskHandler
+            return LiftTaskHandler(self)
+        elif task == "stack":
+            from scripts.tasks.stack import StackTaskHandler
+            return StackTaskHandler(self)
+        elif task == "sort":
+            from scripts.tasks.sort import SortTaskHandler
+            return SortTaskHandler(self)
+        else:
+            raise ValueError(f"Unknown task: {task}")
 
     def get_obs_structure(self):
         """The unbatched, hierarchical observation space for descriptive logging.
@@ -295,9 +309,6 @@ class Track1Env(BaseEnv):
         self.grasp_min_force = reward_config.get("grasp_min_force", 0.5)
         self.grasp_max_angle = reward_config.get("grasp_max_angle", 110)
         
-        # Grasp reward weight (base weight for adaptive scaling)
-        self.reward_weights["grasp"] = weights.get("grasp", 0.0)
-        
         # Adaptive grasp weight: scale by inverse success rate
         # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
         adaptive_cfg = reward_config.get("adaptive_grasp_weight", {})
@@ -306,12 +317,10 @@ class Track1Env(BaseEnv):
         self.adaptive_grasp_eps = adaptive_cfg.get("eps", 0.01)     # Floor for success rate
         self.adaptive_grasp_max = adaptive_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
         self.adaptive_grasp_tau = adaptive_cfg.get("tau", 0.01)     # EMA decay for tracking
-        # EMA of grasp success rate (initialized lazily in _compute_dense_reward when device is available)
-        self.grasp_success_rate = None
-        
+
         # Gated lift reward: only give lift reward when is_grasped=True
         self.gate_lift_with_grasp = reward_config.get("gate_lift_with_grasp", False)
-        
+
         # Adaptive lift weight: scale by inverse success rate (same logic as grasp)
         # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
         adaptive_lift_cfg = reward_config.get("adaptive_lift_weight", {})
@@ -320,19 +329,14 @@ class Track1Env(BaseEnv):
         self.adaptive_lift_eps = adaptive_lift_cfg.get("eps", 0.01)     # Floor for success rate
         self.adaptive_lift_max = adaptive_lift_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
         self.adaptive_lift_tau = adaptive_lift_cfg.get("tau", 0.01)     # EMA decay for tracking
-        # EMA of lift success rate (initialized lazily when device is available)
-        self.lift_success_rate = None
         
         # Adaptive success weight: scale by inverse success rate (same logic as grasp/lift)
-        # dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
         adaptive_success_cfg = reward_config.get("adaptive_success_weight", {})
         self.adaptive_success_enabled = adaptive_success_cfg.get("enabled", False)
         self.adaptive_success_alpha = adaptive_success_cfg.get("alpha", 0.5)  # Exponent for inverse scaling
         self.adaptive_success_eps = adaptive_success_cfg.get("eps", 0.01)     # Floor for success rate
         self.adaptive_success_max = adaptive_success_cfg.get("max_weight", 1000.0)  # Cap to prevent explosion
         self.adaptive_success_tau = adaptive_success_cfg.get("tau", 0.01)     # EMA decay for tracking
-        # EMA of task success rate (initialized lazily when device is available)
-        self.task_success_rate = None
 
 
 
@@ -741,8 +745,9 @@ class Track1Env(BaseEnv):
         obs["red_cube_rot"] = self.red_cube.pose.q
         
         # 1a. Cube Displacement (Relative to initial spawn position)
-        if self.include_cube_displacement and hasattr(self, "initial_red_cube_pos"):
-            red_disp = red_cube_pos - self.initial_red_cube_pos
+        initial_red_cube_pos = getattr(self.task_handler, "initial_red_cube_pos", None)
+        if self.include_cube_displacement and initial_red_cube_pos is not None:
+            red_disp = red_cube_pos - initial_red_cube_pos
             if self.obs_normalize_enabled:
                 # Use relative_pos_clip for displacement as well
                 red_disp = torch.clamp(red_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
@@ -753,8 +758,9 @@ class Track1Env(BaseEnv):
             green_cube_pos = self.green_cube.pose.p
             obs["green_cube_rot"] = self.green_cube.pose.q
             
-            if self.include_cube_displacement and hasattr(self, "initial_green_cube_pos"):
-                green_disp = green_cube_pos - self.initial_green_cube_pos
+            initial_green_cube_pos = getattr(self.task_handler, "initial_green_cube_pos", None)
+            if self.include_cube_displacement and initial_green_cube_pos is not None:
+                green_disp = green_cube_pos - initial_green_cube_pos
                 if self.obs_normalize_enabled:
                     green_disp = torch.clamp(green_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
                 obs["green_cube_displacement"] = green_disp
@@ -1316,78 +1322,8 @@ class Track1Env(BaseEnv):
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         """Initialize episode with randomized object positions and robot poses."""
-        with torch.device(self.device):
-            b = len(env_idx)
-            
-            # Initialize robot poses with noise around zero
-            self._initialize_robot_poses(b, env_idx)
-            
-            if self.task == "lift":
-                # Red cube random in configured spawn_bounds (or default grid)
-                spawn_grid = self.spawn_bounds if self.spawn_bounds else self.grid_bounds["right"]
-                red_pos, red_quat = self._random_grid_position(b, spawn_grid, z=0.015 + self.space_gap)
-                self.red_cube.set_pose(Pose.create_from_pq(p=red_pos, q=red_quat))
-                
-                # Store initial cube full pos for displacement observation
-                if not hasattr(self, "initial_red_cube_pos"):
-                    self.initial_red_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
-                self.initial_red_cube_pos[env_idx] = red_pos
-                
-                # Store initial cube XY for horizontal penalty in reward
-                if not hasattr(self, 'initial_cube_xy'):
-                    self.initial_cube_xy = torch.zeros(self.num_envs, 2, device=self.device)
-                self.initial_cube_xy[env_idx] = red_pos[:, :2]
-                
-                # Reset stable hold counter for success condition
-                if not hasattr(self, 'lift_hold_counter'):
-                    self.lift_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-                self.lift_hold_counter[env_idx] = 0
-                
-                # Reset prev_action for action rate penalty (set to None to skip first step penalty)
-                # Note: prev_action is per-env, so we just clear the whole tensor on any reset
-                self.prev_action = None
-                
-            elif self.task == "stack":
-                # Both cubes in Right Grid, non-overlapping
-                # Minimum distance: 3cm * sqrt(2) ≈ 4.3cm (diagonal of cube)
-                min_dist = 0.043
-                red_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
-                green_pos = self._random_grid_position(b, self.grid_bounds["right"], z=0.015)
-                # Ensure minimum distance (retry until no collision)
-                for _ in range(100):  # Generous retry limit
-                    dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
-                    overlap = dist < min_dist
-                    if not overlap.any():
-                        break
-                    green_pos[overlap] = self._random_grid_position(overlap.sum().item(), self.grid_bounds["right"], z=0.015)
-                
-                self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
-                self.green_cube.set_pose(Pose.create_from_pq(p=green_pos))
-                
-                # Store initial cube full poses
-                if not hasattr(self, "initial_red_cube_pos"):
-                    self.initial_red_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
-                if not hasattr(self, "initial_green_cube_pos"):
-                    self.initial_green_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
-                
-                self.initial_red_cube_pos[env_idx] = red_pos
-                self.initial_green_cube_pos[env_idx] = green_pos
-                
-            elif self.task == "sort":
-                # Both cubes in Mid Grid
-                red_pos = self._random_grid_position(b, self.grid_bounds["mid"], z=0.015)
-                green_pos = self._random_grid_position(b, self.grid_bounds["mid"], z=0.005)  # Smaller green cube
-                self.red_cube.set_pose(Pose.create_from_pq(p=red_pos))
-                self.green_cube.set_pose(Pose.create_from_pq(p=green_pos))
-                
-                # Store initial cube full poses
-                if not hasattr(self, "initial_red_cube_pos"):
-                    self.initial_red_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
-                if not hasattr(self, "initial_green_cube_pos"):
-                    self.initial_green_cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
-                
-                self.initial_red_cube_pos[env_idx] = red_pos
-                self.initial_green_cube_pos[env_idx] = green_pos
+        super()._initialize_episode(env_idx, options) # Handle robots
+        self.task_handler.initialize_episode(env_idx, options)
 
     def _initialize_robot_poses(self, batch_size: int, env_idx: torch.Tensor):
         """Initialize robot poses with zero + small noise.
@@ -1423,167 +1359,14 @@ class Track1Env(BaseEnv):
         return torch.stack([x, y, z_tensor], dim=1), randomization.random_quaternions(batch_size, lock_x=True, lock_y=True, lock_z=False)
 
     def evaluate(self):
-        """Evaluate success/fail based on task."""
-        if self.task == "lift":
-            return self._evaluate_lift()
-        elif self.task == "stack":
-            return self._evaluate_stack()
-        elif self.task == "sort":
-            return self._evaluate_sort()
-        return {}
-
-    def _evaluate_lift(self):
-        """Lift: red cube >= lift_target AND is_grasped for stable_hold_time seconds.
-        
-        If stable_hold_time=0, success is instant (cube just needs to be above threshold while grasped).
-        Otherwise, cube must stay above threshold AND grasped for stable_hold_steps consecutive steps.
-        """
-        red_z = self.red_cube.pose.p[:, 2]
-        is_above = red_z >= self.lift_target
-        
-        # Check if currently grasping the cube
-        agent = self.right_arm
-        is_grasped = agent.is_grasping(
-            self.red_cube,
-            min_force=self.grasp_min_force,
-            max_angle=self.grasp_max_angle
-        )
-        
-        # Valid hold: cube is above target AND is being grasped
-        is_valid_hold = is_above & is_grasped
-        
-        if self.stable_hold_steps <= 0:
-            # Instant success mode (backward compatible)
-            success = is_valid_hold
-        else:
-            # Stable hold mode: increment counter when valid, reset otherwise
-            if not hasattr(self, 'lift_hold_counter'):
-                self.lift_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-            
-            # Increment counter only when both above AND grasped
-            self.lift_hold_counter = torch.where(
-                is_valid_hold,
-                self.lift_hold_counter + 1,
-                torch.zeros_like(self.lift_hold_counter)  # Reset if not valid
-            )
-            
-            # Success when counter reaches required hold steps
-            success = self.lift_hold_counter >= self.stable_hold_steps
-            
-        # Failure conditions
-        fallen_threshold = -0.05
-        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
-        fail = red_fallen
-        
-        if self.fail_bounds is not None:
-            red_pos = self.red_cube.pose.p
-            out_of_bounds = (
-                (red_pos[:, 0] < self.fail_bounds["x_min"]) |
-                (red_pos[:, 0] > self.fail_bounds["x_max"]) |
-                (red_pos[:, 1] < self.fail_bounds["y_min"]) |
-                (red_pos[:, 1] > self.fail_bounds["y_max"])
-            )
-            # Only fail on out_of_bounds if NOT grasping (allow moving cube while grasped)
-            fail = fail | (out_of_bounds & (~is_grasped))
-            
-        # Ensure success is False if already failed
-        success = success & (~fail)
-        
-        return {
-            "success": success, 
-            "fail": fail,
-            "red_height": red_z, 
-            "hold_steps": self.lift_hold_counter if hasattr(self, 'lift_hold_counter') else 0
-        }
-
-    def _evaluate_stack(self):
-        """Stack: red cube on top of green cube, stable on table."""
-        red_pos = self.red_cube.pose.p
-        green_pos = self.green_cube.pose.p
-        
-        # Check green cube is on table (z ~ 1.5cm for 3cm cube)
-        green_on_table = (green_pos[:, 2] > 0.010) & (green_pos[:, 2] < 0.020)
-        
-        # Check if red is above green (z difference ~ 3cm = cube size, allow ±0.5cm)
-        z_diff = red_pos[:, 2] - green_pos[:, 2]
-        z_ok = (z_diff > 0.025) & (z_diff < 0.035)
-        
-        # Check xy alignment (within 1.5cm for stability)
-        xy_dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
-        xy_ok = xy_dist < 0.015
-        
-        success = green_on_table & z_ok & xy_ok
-        # Failure conditions
-        fallen_threshold = -0.05
-        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
-        green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
-        fail = red_fallen | green_fallen
-        
-        success = success & (~fail)
-        
-        return {
-            "success": success, 
-            "fail": fail,
-            "green_on_table": green_on_table, 
-            "z_diff": z_diff, 
-            "xy_dist": xy_dist
-        }
-
-    def _evaluate_sort(self):
-        """Sort: green in Left Grid, red in Right Grid."""
-        red_pos = self.red_cube.pose.p
-        green_pos = self.green_cube.pose.p
-        
-        # Check red in Right Grid
-        red_in_right = (
-            (red_pos[:, 0] >= self.grid_bounds["right"]["x_min"]) & 
-            (red_pos[:, 0] <= self.grid_bounds["right"]["x_max"]) &
-            (red_pos[:, 1] >= self.grid_bounds["right"]["y_min"]) & 
-            (red_pos[:, 1] <= self.grid_bounds["right"]["y_max"])
-        )
-        
-        # Check green in Left Grid
-        green_in_left = (
-            (green_pos[:, 0] >= self.grid_bounds["left"]["x_min"]) & 
-            (green_pos[:, 0] <= self.grid_bounds["left"]["x_max"]) &
-            (green_pos[:, 1] >= self.grid_bounds["left"]["y_min"]) & 
-            (green_pos[:, 1] <= self.grid_bounds["left"]["y_max"])
-        )
-        
-        success = red_in_right & green_in_left
-        # Failure conditions
-        fallen_threshold = -0.05
-        red_fallen = self.red_cube.pose.p[:, 2] < fallen_threshold
-        green_fallen = self.green_cube.pose.p[:, 2] < fallen_threshold
-        fail = red_fallen | green_fallen
-        
-        success = success & (~fail)
-        
-        return {
-            "success": success, 
-            "fail": fail,
-            "red_in_right": red_in_right, 
-            "green_in_left": green_in_left
-        }
+        """Evaluate success/fail based on task (delegated to handler)."""
+        return self.task_handler.evaluate()
     # ==================== Dense Reward Functions ====================
     
     def compute_dense_reward(self, obs, action, info):
-        """Compute dense reward based on task."""
-        if self.task == "lift":
-            return self._compute_lift_dense_reward(info, action)
-        elif self.task == "stack":
-            return self._compute_stack_dense_reward(info)
-        elif self.task == "sort":
-            return self._compute_sort_dense_reward(info)
-        else:
-            return torch.zeros(self.num_envs, device=self.device)
+        """Compute dense reward (delegated to handler)."""
+        return self.task_handler.compute_dense_reward(info, action)
 
-    def compute_normalized_dense_reward(self, obs, action, info):
-        """Compute normalized dense reward (scaled to roughly [0, 1])."""
-        reward = self.compute_dense_reward(obs, action, info)
-        # Normalize by maximum expected reward
-        max_reward = 10.0  # Approximate max for success bonus
-        return reward / max_reward
 
     def _get_gripper_pos(self):
         """Get the gripper reference position for the right arm.
@@ -1694,359 +1477,3 @@ class Track1Env(BaseEnv):
             ref_pos = ref_pos + outward_dir * self.moving_jaw_outward_offset
         
         return ref_pos
-
-    def _compute_lift_dense_reward(self, info, action=None):
-        """Dense reward for Lift task.
-        
-        Components:
-        1. approach: Encourage fixed jaw to approach cube center
-        2. approach2: Encourage moving jaw to approach cube center
-        3. horizontal_displacement: Cube XY displacement from initial position (meters)
-        4. lift: Reward proportional to cube height
-        5. action_rate: Penalize action changes (anti-jitter)
-        6. success: Bonus when cube is lifted above threshold
-        """
-        # Get config values
-        w = self.reward_weights
-        thresholds = self.stage_thresholds
-        
-        cube_pos = self.red_cube.pose.p
-        cube_height = cube_pos[:, 2]
-        
-        # 0. Check if currently grasping (used for gating other rewards)
-        agent = self.right_arm
-        is_grasped = agent.is_grasping(
-            self.red_cube,
-            min_force=self.grasp_min_force,
-            max_angle=self.grasp_max_angle
-        )
-        
-        # Approach reward calculation based on approach_mode and approach_curve
-        threshold = self.approach_threshold
-        zero_point = self.approach_zero_point
-        
-        # Helper function to compute approach reward based on curve type
-        def compute_approach_reward(distance, th, zp):
-            if self.approach_curve == "tanh":
-                # Tanh curve: reward = 1 - tanh(distance / scale)
-                # At distance=0: reward=1, as distance increases: reward smoothly decreases
-                return 1.0 - torch.tanh(distance / self.approach_tanh_scale)
-            else:
-                # Linear (piecewise): reward = 1.0 if d<threshold, linear decay to 0 at zero_point
-                return torch.where(
-                    distance < th,
-                    torch.ones_like(distance),
-                    torch.clamp(1.0 - (distance - th) / (zp - th), min=0.0)
-                )
-        
-        if self.approach_mode == "tcp_midpoint":
-            # TCP midpoint mode: single distance from TCP center to cube (like reference implementation)
-            tcp_pos = self.right_arm.tcp_pos
-            distance = torch.norm(tcp_pos - cube_pos, dim=1)
-            
-            approach_reward = compute_approach_reward(distance, threshold, zero_point)
-            # No approach2 in tcp_midpoint mode
-            approach2_reward = torch.zeros_like(approach_reward)
-        else:
-            # Dual-point mode: separate fixed jaw and moving jaw approach rewards
-            # 1. Approach reward (fixed jaw)
-            gripper_pos = self._get_gripper_pos()
-            distance = torch.norm(gripper_pos - cube_pos, dim=1)
-            
-            approach_reward = compute_approach_reward(distance, threshold, zero_point)
-            
-            # 2. Approach2 reward (moving jaw)
-            moving_jaw_pos = self._get_moving_jaw_pos()
-            distance2 = torch.norm(moving_jaw_pos - cube_pos, dim=1)
-            threshold2 = self.approach2_threshold
-            zero_point2 = self.approach2_zero_point
-            
-            approach2_reward = compute_approach_reward(distance2, threshold2, zero_point2)
-        
-        # 3. Horizontal displacement: cube XY displacement from initial position (positive value)
-        # initial_cube_xy is set during episode initialization
-        # Only penalize displacement beyond threshold (allows small movements during grasping)
-        if hasattr(self, 'initial_cube_xy'):
-            raw_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
-            threshold = self.horizontal_displacement_threshold
-            horizontal_displacement = torch.clamp(raw_displacement - threshold, min=0.0)
-            
-            # Disable horizontal displacement penalty when grasping
-            horizontal_displacement = horizontal_displacement * (~is_grasped).float()
-        else:
-            horizontal_displacement = torch.zeros(self.num_envs, device=self.device)
-        
-        # 4. Lift reward: height of cube above baseline (subtract initial resting height)
-        # Cube starts at half_size height (0.015m for 3cm cube)
-        cube_baseline_height = 0.015  # half_size of red cube
-        lift_height = cube_height - cube_baseline_height
-        if self.lift_max_height is not None and self.lift_max_height > 0:
-            lift_reward = torch.clamp(lift_height, min=0.0, max=self.lift_max_height) / self.lift_max_height
-        else:
-            lift_reward = torch.clamp(lift_height, min=0.0)
-        
-        # 5. Action rate penalty: ||action_t - action_{t-1}||^2
-        if action is not None and w.get("action_rate", 0.0) != 0:
-            # Convert action to tensor if needed
-            if isinstance(action, dict):
-                # Dict action space - concatenate all values
-                action_tensor = torch.cat([v.flatten(start_dim=1) for v in action.values()], dim=1)
-            else:
-                action_tensor = action.flatten(start_dim=1) if action.dim() > 1 else action.unsqueeze(0)
-            
-            if self.prev_action is None:
-                # First step: no penalty
-                action_rate = torch.zeros(self.num_envs, device=self.device)
-            else:
-                # Compute squared L2 norm of action difference
-                action_diff = action_tensor - self.prev_action
-                action_rate = torch.sum(action_diff ** 2, dim=1)
-            
-            # Update prev_action for next step
-            self.prev_action = action_tensor.clone()
-        else:
-            action_rate = torch.zeros(self.num_envs, device=self.device)
-        
-        # 5.5 Hold progress reward: proportional to hold time at lift_target height
-        # Total reward over the duration will sum to T (average 1 reward per step)
-        # R_t = 2 * counter / (T + 1), linear growth with quadratic sum
-        if self.stable_hold_steps > 0 and hasattr(self, 'lift_hold_counter'):
-            T = float(self.stable_hold_steps)
-            hold_progress = (2.0 * self.lift_hold_counter.float()) / (T + 1.0)
-            # Clamp to prevent extreme values, max is at t=T: 2T/(T+1) ≈ 2
-            hold_progress = torch.clamp(hold_progress, min=0.0, max=2.0)
-        else:
-            hold_progress = torch.zeros(self.num_envs, device=self.device)
-        
-        # 6. Success bonus: cube lifted above threshold for stable_hold_time
-        success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
-        success_bonus = success.float()
-        
-        # Adaptive success weight: scale by inverse success rate (disabled during eval)
-        if self.adaptive_success_enabled and not self.eval_mode:
-            # Lazy initialization
-            if self.task_success_rate is None:
-                self.task_success_rate = torch.tensor(self.adaptive_success_eps, device=self.device)
-            
-            # Update EMA of task success rate
-            batch_success_rate = success_bonus.mean()
-            self.task_success_rate = self.task_success_rate * (1 - self.adaptive_success_tau) + batch_success_rate * self.adaptive_success_tau
-            
-            # Compute dynamic weight: base * (1 / rate)^alpha, capped at max
-            dynamic_success_weight = w.get("success", 0.0) * torch.pow(
-                1.0 / (self.task_success_rate + self.adaptive_success_eps),
-                self.adaptive_success_alpha
-            )
-            dynamic_success_weight = torch.clamp(dynamic_success_weight, max=self.adaptive_success_max)
-        else:
-            dynamic_success_weight = w.get("success", 0.0)
-        
-        # 7. Fail penalty: cube out of bounds or fallen
-        fail = info.get("fail", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
-        fail_penalty = fail.float()
-        
-        # 8. Grasp reward: bonus for successfully grasping the cube
-        grasp_reward = is_grasped.float()  # 0 or 1
-        
-        # 8.5 Grasp hold reward: reward for stable continuous grasp
-        # Similar to hold_progress but for grasping (not necessarily lifting)
-        # R_t = 2 * counter / (T + 1), ensuring sum over T steps is T * weight (avg 1/step)
-        if hasattr(self, 'grasp_hold_max_steps') and self.grasp_hold_max_steps > 0:
-            if not hasattr(self, 'grasp_hold_counter'):
-                self.grasp_hold_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-            
-            # Increment counter when grasping, reset otherwise
-            self.grasp_hold_counter = torch.where(
-                is_grasped,
-                self.grasp_hold_counter + 1,
-                torch.zeros_like(self.grasp_hold_counter)
-            )
-            
-            # Cap counter at max_steps to maintain constant reward after reaching max
-            # Max reward at t=T: 2T/(T+1) ≈ 2
-            current_count = torch.clamp(self.grasp_hold_counter, max=self.grasp_hold_max_steps)
-            T = float(self.grasp_hold_max_steps)
-            grasp_hold_reward = (2.0 * current_count.float()) / (T + 1.0)
-        else:
-            grasp_hold_reward = torch.zeros(self.num_envs, device=self.device)
-        
-        # Adaptive grasp weight: scale by inverse success rate (disabled during eval)
-        if self.adaptive_grasp_enabled and not self.eval_mode:
-            # Lazy initialization of grasp_success_rate (device not available in __init__)
-            if self.grasp_success_rate is None:
-                self.grasp_success_rate = torch.tensor(self.adaptive_grasp_eps, device=self.device)
-            
-            # Update EMA of grasp success rate
-            batch_success_rate = grasp_reward.mean()
-            self.grasp_success_rate = self.grasp_success_rate * (1 - self.adaptive_grasp_tau) + batch_success_rate * self.adaptive_grasp_tau
-            
-            # Compute dynamic weight: base * (1 / rate)^alpha, capped at max
-            dynamic_grasp_weight = w.get("grasp", 0.0) * torch.pow(
-                1.0 / (self.grasp_success_rate + self.adaptive_grasp_eps),
-                self.adaptive_grasp_alpha
-            )
-            dynamic_grasp_weight = torch.clamp(dynamic_grasp_weight, max=self.adaptive_grasp_max)
-        else:
-            dynamic_grasp_weight = w.get("grasp", 0.0)
-        
-        # 9. Apply gated lift reward if configured
-        # Only give lift reward when grasping the cube
-        if self.gate_lift_with_grasp:
-            effective_lift_reward = lift_reward * is_grasped.float()
-        else:
-            effective_lift_reward = lift_reward
-        
-        # 10. Adaptive lift weight: scale by inverse success rate
-        # "is_lifting" = cube height > some small threshold (e.g., cube is being lifted)
-        # Use lift_reward > 0 as the signal for "is_lifting"
-        is_lifting = (effective_lift_reward > 0).float()
-        
-        if self.adaptive_lift_enabled and not self.eval_mode:
-            # Lazy initialization
-            if self.lift_success_rate is None:
-                self.lift_success_rate = torch.tensor(self.adaptive_lift_eps, device=self.device)
-            
-            # Update EMA of lift success rate
-            batch_lift_rate = is_lifting.mean()
-            self.lift_success_rate = self.lift_success_rate * (1 - self.adaptive_lift_tau) + batch_lift_rate * self.adaptive_lift_tau
-            
-            # Compute dynamic weight: base * (1 / rate)^alpha, capped at max
-            dynamic_lift_weight = w.get("lift", 0.0) * torch.pow(
-                1.0 / (self.lift_success_rate + self.adaptive_lift_eps),
-                self.adaptive_lift_alpha
-            )
-            dynamic_lift_weight = torch.clamp(dynamic_lift_weight, max=self.adaptive_lift_max)
-        else:
-            dynamic_lift_weight = w.get("lift", 0.0)
-        
-        # 11. Apply gated hold_progress reward (only when grasping)
-        if self.gate_lift_with_grasp:
-            effective_hold_progress = hold_progress * is_grasped.float()
-        else:
-            effective_hold_progress = hold_progress
-        
-        # Weighted sum (use negative weights for penalties)
-        # In dual_point mode, approach weight is used for both approach and approach2
-        reward = (w["approach"] * approach_reward +
-                  w["approach"] * approach2_reward +  # Same weight as approach in dual_point mode
-                  dynamic_grasp_weight * grasp_reward +
-                  w.get("grasp_hold", 0.0) * grasp_hold_reward +  # New grasp hold reward
-                  w["horizontal_displacement"] * horizontal_displacement +
-                  dynamic_lift_weight * effective_lift_reward + 
-                  w.get("hold_progress", 0.0) * effective_hold_progress +
-                  w.get("action_rate", 0.0) * action_rate +
-                  dynamic_success_weight * success_bonus +
-                  w["fail"] * fail_penalty)
-        
-        # Store reward components for logging (keep as GPU tensors to avoid sync)
-        # Runner will call .item() only when logging is needed
-        info["reward_components"] = {
-            "approach": (w["approach"] * approach_reward).mean(),
-            "grasp": (dynamic_grasp_weight * grasp_reward).mean(),
-            "grasp_hold": (w.get("grasp_hold", 0.0) * grasp_hold_reward).mean(),
-            "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
-            "lift": (dynamic_lift_weight * effective_lift_reward).mean(),
-            "hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress).mean(),
-            "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
-        }
-        
-        # Store per-environment reward components for CSV export (evaluation only)
-        # Only create this during eval to save memory (training has 2048 envs, eval has 8)
-        if self.eval_mode:
-            # These are [num_envs] tensors without .mean(), so each env has its own value
-            info["reward_components_per_env"] = {
-                "approach": w["approach"] * approach_reward,
-                "grasp": dynamic_grasp_weight * grasp_reward,
-                "grasp_hold": w.get("grasp_hold", 0.0) * grasp_hold_reward,
-                "horizontal_displacement": w["horizontal_displacement"] * horizontal_displacement,
-                "lift": dynamic_lift_weight * effective_lift_reward,
-                "hold_progress": w.get("hold_progress", 0.0) * effective_hold_progress,
-                "action_rate": w.get("action_rate", 0.0) * action_rate,
-            }
-            # Add approach2 for dual_point mode
-            if self.approach_mode == "dual_point":
-                info["reward_components_per_env"]["approach2"] = w["approach"] * approach2_reward
-        
-        # Log adaptive grasp weight metrics if enabled
-        if self.adaptive_grasp_enabled:
-            info["reward_components"]["grasp_dynamic_weight"] = dynamic_grasp_weight
-            info["reward_components"]["grasp_success_rate"] = self.grasp_success_rate
-        # Log adaptive lift weight metrics if enabled
-        if self.adaptive_lift_enabled:
-            info["reward_components"]["lift_dynamic_weight"] = dynamic_lift_weight
-            info["reward_components"]["lift_success_rate"] = self.lift_success_rate
-        # Log adaptive success weight metrics if enabled
-        if self.adaptive_success_enabled:
-            info["reward_components"]["success_dynamic_weight"] = dynamic_success_weight
-            info["reward_components"]["success_rate"] = self.task_success_rate
-        # Only log approach2 in dual_point mode (for averaged components)
-        if self.approach_mode == "dual_point":
-            info["reward_components"]["approach2"] = (w["approach"] * approach2_reward).mean()
-        # Track success/fail/grasp counts (keep as GPU tensors)
-        info["success_count"] = success.sum()
-        info["fail_count"] = fail.sum()
-        info["grasp_count"] = is_grasped.sum()
-        
-        return reward
-
-    def _compute_stack_dense_reward(self, info):
-        """Dense reward for Stack task.
-        
-        Components:
-        1. reach_red: Approach red cube
-        2. grasp_red: Grasp red cube
-        3. lift_red: Lift red cube above green
-        4. align: Align red over green (xy distance)
-        5. place: Place red on green
-        6. success_bonus
-        """
-        w_reach = 1.0
-        w_grasp = 2.0
-        w_lift = 2.0
-        w_align = 3.0
-        w_place = 5.0
-        w_success = 10.0
-        
-        gripper_pos = self._get_gripper_pos()
-        red_pos = self.red_cube.pose.p
-        green_pos = self.green_cube.pose.p
-        
-        # 1. Reach reward
-        dist_to_red = torch.norm(gripper_pos - red_pos, dim=1)
-        reach_reward = 1.0 - torch.tanh(dist_to_red * 5.0)
-        
-        # 2. Grasp reward
-        is_grasping = dist_to_red < 0.03
-        grasp_reward = is_grasping.float()
-        
-        # 3. Lift reward (red above green)
-        z_diff = red_pos[:, 2] - green_pos[:, 2]
-        lift_reward = torch.clamp(z_diff, min=0.0, max=0.05)  # Cap at 5cm
-        
-        # 4. Alignment reward (xy distance between red and green)
-        xy_dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
-        align_reward = 1.0 - torch.tanh(xy_dist * 10.0)
-        
-        # 5. Place reward (red on top of green)
-        is_stacked = (z_diff > 0.025) & (z_diff < 0.04) & (xy_dist < 0.02)
-        place_reward = is_stacked.float()
-        
-        # 6. Success bonus
-        success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
-        success_bonus = success.float()
-        
-        reward = (w_reach * reach_reward +
-                  w_grasp * grasp_reward +
-                  w_lift * lift_reward +
-                  w_align * align_reward +
-                  w_place * place_reward +
-                  w_success * success_bonus)
-        
-        return reward
-
-    def _compute_sort_dense_reward(self, info):
-        """Dense reward for Sort task (placeholder - needs both arms)."""
-        # For sort task, we need more complex logic with both arms
-        # For now, use sparse reward
-        success = info.get("success", torch.zeros(self.num_envs, device=self.device, dtype=torch.bool))
-        return success.float() * 10.0
