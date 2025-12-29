@@ -173,41 +173,13 @@ class PPORunner:
             
             print(f"Running Observation Normalization enabled (clip={self.obs_clip})")
             
-            # Fetch observation names for granular logging
-            # Traverse wrappers to find the original Dict observation space
-            curr_env = self.envs
-            original_space = None
-            
-            # First, check if the unwrapped env provides a specific structure method (Track1Env case)
-            if hasattr(curr_env, "unwrapped") and hasattr(curr_env.unwrapped, "get_obs_structure"):
-                original_space = curr_env.unwrapped.get_obs_structure()
-            # fallback: look for single_observation_space that is a Dict
-            elif hasattr(curr_env, "unwrapped") and hasattr(curr_env.unwrapped, "single_observation_space") and isinstance(curr_env.unwrapped.single_observation_space, gym.spaces.Dict):
-                original_space = curr_env.unwrapped.single_observation_space
-            elif hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
-                original_space = curr_env.single_observation_space
-            else:
-                # Fallback to traversing wrappers
-                while True:
-                    if hasattr(curr_env, "single_observation_space") and isinstance(curr_env.single_observation_space, gym.spaces.Dict):
-                        original_space = curr_env.single_observation_space
-                        break
-                    if not hasattr(curr_env, "env"):
-                        break
-                    curr_env = curr_env.env
-            
-            if original_space:
-                self.obs_names, _ = self._get_obs_names(original_space)
-            else:
-                # Fallback: if we still can't find it, use the current single_observation_space
-                # which might be a flattened Box, but it's better than nothing.
-                self.obs_names, _ = self._get_obs_names(self.envs.single_observation_space)
+            # Fetch observation names from FlattenStateWrapper
+            # The wrapper stores obs_names during initialization
+            self.obs_names = self._get_obs_names_from_wrapper()
             
             # Final verification: ensure obs_names length matches n_obs
             if len(self.obs_names) != self.n_obs:
                  print(f"Warning: obs_names count ({len(self.obs_names)}) does not match n_obs ({self.n_obs}).")
-                 print(f"Expected {self.n_obs} from env.observation_space, but got {len(self.obs_names)} from get_obs_structure.")
-                 print(f"Structure names: {self.obs_names}")
                  print("Falling back to generic naming: obs_0, obs_1, ...")
                  self.obs_names = [f"obs_{i}" for i in range(self.n_obs)]
             
@@ -215,7 +187,7 @@ class PPORunner:
             if cfg.get("init_obs_stats_from_config", False):
                 self._initialize_obs_stats_from_config()
             
-            print(f"Dynamic observation names for logging (count: {len(self.obs_names)})")
+            print(f"Observation names for logging (count: {len(self.obs_names)})")
         
         # Reward mode for logging
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
@@ -303,24 +275,30 @@ class PPORunner:
             print("Applying CudaGraphModule to Policy (Inference Only)...")
             self.policy = CudaGraphModule(self.policy)
 
-    def _get_obs_names(self, space, prefix="", global_idx=0):
-        """Recursively get observation feature names from a space with global indexing."""
-        names = []
-        if isinstance(space, gym.spaces.Dict):
-            # Sort keys to match FlattenStateWrapper / _flatten_obs order
-            for k in sorted(space.keys()):
-                new_prefix = f"{prefix}/{k}" if prefix else k
-                sub_names, global_idx = self._get_obs_names(space[k], new_prefix, global_idx)
-                names.extend(sub_names)
-        elif hasattr(space, "shape") and space.shape:
-            flat_size = int(np.prod(space.shape))
-            for i in range(flat_size):
-                names.append(f"obs_{global_idx}_{prefix}_{i}")
-                global_idx += 1
-        else:
-            names.append(f"obs_{global_idx}_{prefix}")
-            global_idx += 1
-        return names, global_idx
+    def _get_obs_names_from_wrapper(self) -> list:
+        """Get observation names from FlattenStateWrapper.
+        
+        Traverses the wrapper chain to find FlattenStateWrapper and return its obs_names.
+        Falls back to generic naming if not found.
+        """
+        from scripts.training.common import FlattenStateWrapper
+        
+        # Traverse wrapper chain to find FlattenStateWrapper
+        curr_env = self.envs
+        while curr_env is not None:
+            if isinstance(curr_env, FlattenStateWrapper):
+                return curr_env.obs_names
+            # Try to go deeper in wrapper chain
+            if hasattr(curr_env, "_env"):
+                curr_env = curr_env._env
+            elif hasattr(curr_env, "env"):
+                curr_env = curr_env.env
+            else:
+                break
+        
+        # Fallback to generic names
+        print("Warning: FlattenStateWrapper not found, using generic obs names")
+        return [f"obs_{i}" for i in range(self.n_obs)]
 
     def _initialize_obs_stats_from_config(self):
         """Initialize obs_ema_mean and obs_ema_var from environment config."""

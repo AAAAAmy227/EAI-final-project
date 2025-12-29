@@ -28,28 +28,67 @@ class Track1Env(BaseEnv):
         self, 
         *args, 
         robot_uids=("so101", "so101"),
-        task: str = "lift",  # "lift", "stack", "sort"
-        domain_randomization: bool = True,
-        camera_mode: str = "direct_pinhole",  # "distorted", "distort-twice", "direct_pinhole"
-        control_mode: str = "pd_joint_target_delta_pos",  # control mode from Hydra config
+        cfg=None,  # Hydra DictConfig - primary way to pass Track1-specific config
+        # Legacy explicit params (for backwards compatibility, cfg takes precedence)
+        task: str = None,
+        domain_randomization: bool = None,
+        camera_mode: str = None,
         render_scale: int = 3,
-        reward_config: dict = None,  # Reward configuration from Hydra
-        cube_physics: dict = None,  # Physical properties of the cube
-        table_physics: dict = None,  # Physical properties of the table
-        action_bounds: dict = None,  # Per-joint action bounds override
-        camera_extrinsic: list = None,  # Camera extrinsic matrix (4x4 cam2world)
-        undistort_alpha: float = 0.25,  # Undistortion alpha for pinhole modes
-        obs_normalization: dict = None,  # Obs normalization config (qvel_clip, etc.)
-        eval_mode: bool = False,  # If True, disable adaptive reward weights
-        **kwargs
+        reward_config: dict = None,
+        cube_physics: dict = None,
+        table_physics: dict = None,
+        action_bounds: dict = None,
+        camera_extrinsic: list = None,
+        undistort_alpha: float = None,
+        obs_normalization: dict = None,
+        eval_mode: bool = False,
+        **kwargs  # BaseEnv params: obs_mode, reward_mode, control_mode, sim_config, etc.
     ):
+        # Extract from cfg if provided, else use explicit params
+        if cfg is not None:
+            from omegaconf import OmegaConf
+            task = cfg.env.get("task", "lift")
+            domain_randomization = cfg.env.get("domain_randomization", True)
+            camera_mode = cfg.env.get("camera_mode", "direct_pinhole")
+            
+            # Reward config
+            if "reward" in cfg:
+                reward_config = OmegaConf.to_container(cfg.reward, resolve=True)
+            
+            # Physics
+            if "cube_physics" in cfg.env:
+                cube_physics = OmegaConf.to_container(cfg.env.cube_physics, resolve=True)
+            if "table_physics" in cfg.env:
+                table_physics = OmegaConf.to_container(cfg.env.table_physics, resolve=True)
+            
+            # Action bounds
+            if "control" in cfg and "action_bounds" in cfg.control:
+                action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True)
+            
+            # Camera
+            if "camera" in cfg.env:
+                if "extrinsic" in cfg.env.camera:
+                    camera_extrinsic = OmegaConf.to_container(cfg.env.camera.extrinsic, resolve=True)
+                if "undistort_alpha" in cfg.env.camera:
+                    undistort_alpha = cfg.env.camera.undistort_alpha
+            
+            # Obs normalization
+            if "obs" in cfg:
+                obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True)
+        
+        # Apply defaults for legacy mode
+        task = task or "lift"
+        domain_randomization = domain_randomization if domain_randomization is not None else True
+        camera_mode = camera_mode or "direct_pinhole"
+        undistort_alpha = undistort_alpha if undistort_alpha is not None else 0.25
+        
         self.task = task
         self.domain_randomization = domain_randomization
-        self.eval_mode = eval_mode  # Store eval mode flag
-        self.camera_extrinsic = camera_extrinsic  # Store for use in _default_sensor_configs
-        self.undistort_alpha = undistort_alpha  # For pinhole output modes
+        self.eval_mode = eval_mode
+        self.camera_extrinsic = camera_extrinsic
+        self.undistort_alpha = undistort_alpha
         
-        self.space_gap = 0.001 # 5mm gap for initialize because of friction
+        self.space_gap = 0.001 # 1mm gap for initialize because of friction
         
         # Cube physics properties
         if cube_physics is None:
@@ -131,7 +170,7 @@ class Track1Env(BaseEnv):
         # Set single_arm_mode BEFORE super init (needed in _setup_sensors)
         self.single_arm_mode = task in ["lift", "stack"]
             
-        super().__init__(*args, robot_uids=robot_uids, control_mode=control_mode, **kwargs)
+        super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
         self._setup_device()
         self._setup_single_arm_action_space()

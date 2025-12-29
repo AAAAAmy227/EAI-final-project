@@ -1,9 +1,8 @@
 # Track1 environment configuration
 env_id: "Track1-v0"
 task: "lift"
-control_mode: "pd_joint_target_delta_pos"
 camera_mode: "direct_pinhole"
-obs_mode: "state"          # Use state for max speed (no rendering)
+obs_mode: "state_dict"          # Use state_dict for name label
 include_state: true
 domain_randomization: false  # Disable for faster training (enable for sim2real)
 
@@ -12,7 +11,7 @@ robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/
 
 # Simulation frequency (must match real robot for sim2real)
 # Real robot data is 30 FPS
-sim_freq: 120       # Physics simulation frequency (Hz)
+sim_freq: 240       # Physics simulation frequency (Hz)
 control_freq: 30    # Control frequency (Hz) - MUST match real data (30 Hz)
 
 # Max episode steps based on trajectory analysis
@@ -21,7 +20,7 @@ control_freq: 30    # Control frequency (Hz) - MUST match real data (30 Hz)
 # stable_hold_steps is computed from reward.stable_hold_time * control_freq
 episode_steps:
   base: 296         # Base from trajectory analysis (lift max)
-  multiplier: 1.2   # 20% buffer for RL exploration
+  multiplier: 1.5   # 20% buffer for RL exploration
   # Effective max_episode_steps for lift with 10s hold:
   # 296 * 1.2 + (10 * 30) = 355 + 300 = 655 steps
   # Effective max_episode_steps = 296 * 1.2 = 355 (for lift)
@@ -50,8 +49,8 @@ camera:
 # These values are applied to the cube during environment creation
 cube_physics:
   mass: 0.1                 # 100g (reference uses 0.1)
-  static_friction: 5.0      # High friction for stable grasp (reference uses 5.0)
-  dynamic_friction: 3.0     # Dynamic friction (reference uses 3.0)
+  static_friction: 0.5      # High friction for stable grasp (reference uses 5.0)
+  dynamic_friction: 0.5     # Dynamic friction (reference uses 3.0)
   restitution: 0.0          # No bounce (reference uses 0.0)
 
 # Table Physical Properties
@@ -59,8 +58,8 @@ cube_physics:
 # Note: Actual contact friction = sqrt(cube_friction * table_friction)
 # Example: sqrt(5.0 * 2.0) = 3.16
 table_physics:
-  static_friction: 2.0      # Table static friction
-  dynamic_friction: 2.0     # Table dynamic friction
+  static_friction: 0.1      # Table static friction
+  dynamic_friction: 0.1     # Table dynamic friction
   restitution: 0.0          # No bounce
 
 # Gripper Physical Properties (aligned with reference implementation)

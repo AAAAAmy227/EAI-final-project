@@ -116,158 +116,168 @@ class NormalizeRewardGPU(gym.Wrapper):
 
 
 class FlattenStateWrapper(gym.ObservationWrapper):
-    """Flattens the dict observation into a single vector (for State mode).
-    Handles GPU tensors efficiently.
+    """Flattens dict observations into a single vector, with dimension name tracking.
+    
+    Uses ManiSkill's flatten_state_dict for consistent ordering with their internal logic.
+    Records obs_names during init for logging purposes.
+    
+    Attributes:
+        obs_names: List of descriptive names for each flattened dimension.
     """
-    def __init__(self, env):
+    
+    def __init__(self, env) -> None:
         super().__init__(env)
-        self.flat_dim = self._count_dim(env.observation_space)
-        self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, 
-            shape=(self.flat_dim,), 
-            dtype=np.float32
-        )
+        from mani_skill.utils import common as ms_common
+        from mani_skill.envs.sapien_env import BaseEnv
         
-    def _count_dim(self, space):
-        d = 0
-        if isinstance(space, gym.spaces.Dict):
-            for v in space.values():
-                d += self._count_dim(v)
-        elif isinstance(space, gym.spaces.Box):
-            d += np.prod(space.shape)
-        return d
-
-    def observation(self, observation):
-        return self._flatten_recursive(observation)
-
-    def _flatten_recursive(self, obs):
-        tensors = []
-        if isinstance(obs, dict):
-            for k in sorted(obs.keys()):
-                tensors.append(self._flatten_recursive(obs[k]))
+        # Get base env for accessing raw obs structure
+        base_env: BaseEnv = self.env.unwrapped
+        
+        # Get initial raw observation to determine structure and names
+        # _init_raw_obs is set by ManiSkill after first reset
+        raw_obs = base_env._init_raw_obs
+        
+        # Flatten to get the structure and update observation space
+        flattened = ms_common.flatten_state_dict(raw_obs)
+        base_env.update_obs_space(flattened)
+        
+        # Extract dimension names by walking the raw obs dict
+        self._obs_names = self._extract_names(raw_obs)
+        
+        # Verify count matches
+        expected_dim = flattened.shape[-1] if hasattr(flattened, 'shape') else len(flattened)
+        if len(self._obs_names) != expected_dim:
+            print(f"Warning: obs_names count ({len(self._obs_names)}) != flattened dim ({expected_dim})")
+            print(f"Falling back to generic naming")
+            self._obs_names = [f"obs_{i}" for i in range(expected_dim)]
+    
+    @property
+    def base_env(self):
+        return self.env.unwrapped
+    
+    @property
+    def obs_names(self) -> list:
+        """List of descriptive names for each flattened observation dimension."""
+        return self._obs_names
+    
+    def _extract_names(self, obs_dict, prefix="") -> list:
+        """Recursively extract names from observation dict structure.
+        
+        Uses same traversal order as ManiSkill's flatten_state_dict (dict key order).
+        """
+        from mani_skill.utils import common as ms_common
+        names = []
+        
+        if isinstance(obs_dict, dict):
+            for key in obs_dict.keys():  # Same order as flatten_state_dict
+                new_prefix = f"{prefix}/{key}" if prefix else key
+                names.extend(self._extract_names(obs_dict[key], new_prefix))
         else:
-            if obs.ndim > 2:
-                v = obs.flatten(start_dim=1)
+            # Leaf tensor - add one name per element
+            if hasattr(obs_dict, 'shape'):
+                # Handle batched tensors: shape is (B, *dims)
+                # Get the non-batch dimensions
+                if len(obs_dict.shape) > 1:
+                    dim = int(np.prod(obs_dict.shape[1:]))
+                else:
+                    dim = 1
             else:
-                v = obs
-            tensors.append(v)
-        return torch.cat(tensors, dim=-1)
+                dim = 1
+            
+            if dim == 1:
+                names.append(prefix)
+            else:
+                for i in range(dim):
+                    names.append(f"{prefix}_{i}")
+        
+        return names
+    
+    def observation(self, observation):
+        """Flatten observation dict to tensor using ManiSkill's function."""
+        from mani_skill.utils import common as ms_common
+        return ms_common.flatten_state_dict(observation, use_torch=True)
+
+
+def compute_max_episode_steps(cfg: DictConfig, for_eval: bool = False) -> int:
+    """Compute max episode steps from config.
+    
+    Formula: (base * multiplier) + hold_steps, optionally scaled for eval.
+    """
+    if "episode_steps" in cfg.env:
+        base = cfg.env.episode_steps.get("base", 296)
+        multiplier = cfg.env.episode_steps.get("multiplier", 1.2)
+        max_steps = int(base * multiplier)
+        
+        # Add stable hold time from reward config (if present)
+        if "reward" in cfg and "stable_hold_time" in cfg.reward:
+            control_freq = cfg.env.get("control_freq", 30)
+            hold_steps = int(cfg.reward.stable_hold_time * control_freq)
+            max_steps += hold_steps
+        
+        # Scale for evaluation if needed
+        if for_eval:
+            eval_multiplier = cfg.training.get("eval_step_multiplier", 1.0)
+            max_steps = int(max_steps * eval_multiplier)
+        
+        return max_steps
+    else:
+        return cfg.env.get("max_episode_steps", None)
 
 
 def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: str = None):
     """Create Track1 environment with proper wrappers."""
-    reward_config = OmegaConf.to_container(cfg.reward, resolve=True) if "reward" in cfg else None
     
-    # Get action_bounds from control config if available
-    action_bounds = None
-    if "control" in cfg and "action_bounds" in cfg.control:
-        action_bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True)
-    
-    # Get simulation frequencies (must match real robot for sim2real)
-    sim_freq = cfg.env.get("sim_freq", 120)      # Physics simulation frequency
-    control_freq = cfg.env.get("control_freq", 30)  # Control frequency (real robot is 30 Hz)
-    
-    # Build sim_config dict for ManiSkill
-    # Read solver config from YAML (with fallbacks to ManiSkill-recommended values)
+    # Build sim_config dict for ManiSkill (BaseEnv needs this, not Track1Env-specific)
+    sim_freq = cfg.env.get("sim_freq", 120)
+    control_freq = cfg.env.get("control_freq", 30)
     solver_cfg = cfg.env.get("solver", {})
-    solver_position_iterations = solver_cfg.get("position_iterations", 20)
-    solver_velocity_iterations = solver_cfg.get("velocity_iterations", 1)
     
     sim_config = {
         "sim_freq": sim_freq,
         "control_freq": control_freq,
         "scene_config": {
-            "solver_position_iterations": solver_position_iterations,
-            "solver_velocity_iterations": solver_velocity_iterations,
+            "solver_position_iterations": solver_cfg.get("position_iterations", 20),
+            "solver_velocity_iterations": solver_cfg.get("velocity_iterations", 1),
         }
     }
     
-    # Get camera config options
-    camera_extrinsic = None
-    undistort_alpha = 0.25  # Default
-    if "camera" in cfg.env:
-        if "extrinsic" in cfg.env.camera:
-            camera_extrinsic = OmegaConf.to_container(cfg.env.camera.extrinsic, resolve=True)
-        if "undistort_alpha" in cfg.env.camera:
-            undistort_alpha = cfg.env.camera.undistort_alpha
+    # Configure SO101 class attributes (urdf_path, gripper physics) before environment creation
+    from scripts.so101 import SO101
+    SO101.configure_from_cfg(cfg)
     
-    # Get domain randomization flag (default True for backwards compat)
-    domain_randomization = cfg.env.get("domain_randomization", True)
+    # Get device ID for GPU selection
+    device_id = cfg.get("device_id", 0)
+    sim_backend = f"physx_cuda:{device_id}"
+    if for_eval or (cfg.env.get("need_render", False)):
+        render_backend = f"sapien_cuda:{device_id}" 
+        render_mode = "sensors"
+    else:
+        render_mode = None
+        render_backend = None
     
-    # Get obs normalization config
-    obs_normalization = None
-    if "obs" in cfg:
-        obs_normalization = OmegaConf.to_container(cfg.obs, resolve=True)
-    
-    # Set custom robot URDF path if specified (before environment creation)
-    if "robot_urdf" in cfg.env:
-        from scripts.so101 import SO101
-        SO101.urdf_path = cfg.env.robot_urdf
-    
-    # Apply gripper physics config from YAML to SO101 (before environment creation)
-    if "gripper_physics" in cfg.env:
-        from scripts.so101 import SO101
-        gripper_cfg = cfg.env.gripper_physics
-        
-        # Get default config and override with YAML values
-        SO101.urdf_config = SO101._get_default_urdf_config()
-        SO101.urdf_config["_materials"]["gripper"] = dict(
-            static_friction=gripper_cfg.get("static_friction", 2.0),
-            dynamic_friction=gripper_cfg.get("dynamic_friction", 2.0),
-            restitution=gripper_cfg.get("restitution", 0.0),
-        )
-        SO101.urdf_config["link"]["gripper_link"] = dict(
-            material="gripper",
-            patch_radius=gripper_cfg.get("patch_radius", 0.1),
-            min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
-        )
-        SO101.urdf_config["link"]["moving_jaw_so101_v1_link"] = dict(
-            material="gripper",
-            patch_radius=gripper_cfg.get("patch_radius", 0.1),
-            min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
-        )
-    
+    assert cfg.env.obs_mode == "state_dict", "Only state_dict is supported for now"
+    # Build env_kwargs: BaseEnv params + cfg for Track1Env to parse
     env_kwargs = dict(
-        task=cfg.env.task,
-        control_mode=cfg.env.control_mode,
-        camera_mode=cfg.env.camera_mode,
-        obs_mode=cfg.env.obs_mode,
-        domain_randomization=domain_randomization,
+        # Track1Env extracts its config from cfg
+        cfg=cfg,
+        eval_mode=for_eval,
+        # BaseEnv params
+        obs_mode=cfg.env.obs_mode, 
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
-        reward_config=reward_config,
-        cube_physics=OmegaConf.to_container(cfg.env.cube_physics, resolve=True) if "cube_physics" in cfg.env else None,
-        table_physics=OmegaConf.to_container(cfg.env.table_physics, resolve=True) if "table_physics" in cfg.env else None,
-        action_bounds=action_bounds,
-        camera_extrinsic=camera_extrinsic,
-        undistort_alpha=undistort_alpha,
-        obs_normalization=obs_normalization,
-        eval_mode=for_eval,  # Disable adaptive weights during evaluation
+        control_mode=cfg.control.control_mode,
         sim_config=sim_config,
-        render_mode="sensors",  # 'sensors' works with RecordEpisode, shows RGB only
-        sim_backend="physx_cuda",
+        render_mode=render_mode,
+        sim_backend=sim_backend,
+        render_backend=render_backend,
     )
+
+    from mani_skill.utils.wrappers import FlattenObservationWrapper
+    from mani_skill.utils.wrappers import FlattenActionSpaceWrapper
+    # from mani_skill.utils.wrappers import FlattenRGBDObservationWrapper
     
     reconfiguration_freq = 1 if for_eval else None
     
-    # Compute max_episode_steps: (base * multiplier) + hold_steps
-    if "episode_steps" in cfg.env:
-        base = cfg.env.episode_steps.get("base", 296)
-        multiplier = cfg.env.episode_steps.get("multiplier", 1.2)
-        max_episode_steps = int(base * multiplier)
-        
-        # Add stable hold time from reward config (if present)
-        if "reward" in cfg and "stable_hold_time" in cfg.reward:
-            stable_hold_time = cfg.reward.stable_hold_time
-            control_freq = cfg.env.get("control_freq", 30)
-            stable_hold_steps = int(stable_hold_time * control_freq)
-            max_episode_steps += stable_hold_steps
-        
-        # Scale for evaluation if needed
-        if for_eval:
-            eval_multiplier = cfg.training.get("eval_step_multiplier", 1.0)
-            max_episode_steps = int(max_episode_steps * eval_multiplier)
-    else:
-        max_episode_steps = cfg.env.get("max_episode_steps", None)
+    max_episode_steps = compute_max_episode_steps(cfg, for_eval)
     
     env = gym.make(
         cfg.env.env_id,
@@ -277,33 +287,28 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         **env_kwargs
     )
     
+    # Flatten state_dict observations to tensor (with obs_names tracking)
+    env = FlattenStateWrapper(env)
+
     # Video Recording (only for eval envs with capture_video enabled)
+    # Note: RecordEpisode should be AFTER observation wrappers per ManiSkill docs
     if for_eval and video_dir and cfg.capture_video:
-        # For evaluation, we want manual control over video saving in runner.py
-        # because we use ignore_terminations=True. We set max_steps_per_video 
-        # to a very large value to disable automatic flushing on steps.
         env = RecordEpisode(
             env,
             output_dir=video_dir,
             save_trajectory=False,
-            save_on_reset=False,  # Disable automatic save on reset
-            max_steps_per_video=int(1e6), # Effectively disable automatic flush on steps
+            save_on_reset=False,
+            max_steps_per_video=int(1e6),
             video_fps=30,
-            info_on_video=False,  # Disabled: crashes with rgb_array render mode
+            info_on_video=False,
         )
 
-    # Flatten observations
-    if cfg.env.obs_mode == "state":
-        env = FlattenStateWrapper(env)
-    else:
-        env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=cfg.env.include_state)
-    
     # Wrap with ManiSkillVectorEnv (different config for training vs eval)
     if for_eval:
         # Eval: ignore terminations to run full episodes, record metrics for final_info
-        env = ManiSkillVectorEnv(env, num_envs, ignore_terminations=True, record_metrics=True)
+        env = ManiSkillVectorEnv(env, num_envs, auto_reset=False,ignore_terminations=True, record_metrics=True)
     else:
         # Training: auto-reset on terminations (fail/success triggers reset)
-        env = ManiSkillVectorEnv(env, num_envs, auto_reset=True, ignore_terminations=False)
+        env = ManiSkillVectorEnv(env, num_envs, auto_reset=True, ignore_terminations=False, record_metrics= True)
     
     return env

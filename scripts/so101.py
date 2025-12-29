@@ -42,31 +42,48 @@ class SO101(BaseAgent):
     
     # Default urdf_config - can be overridden by environment before agent creation
     # This will be modified by the environment based on config values
-    urdf_config = None
-    
-    @classmethod
-    def _get_default_urdf_config(cls):
-        """Get default URDF config with hardcoded reference values."""
-        return dict(
-            _materials=dict(
-                gripper=dict(static_friction=2, dynamic_friction=2, restitution=0.0)
-            ),
-            link=dict(
-                gripper_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
-                moving_jaw_so101_v1_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
-            ),
-        )
-
-    keyframes = dict(
-        rest=Keyframe(
-            qpos=np.array([0, -1.5708, 1.5708, 0.66, 0, -1.1]),
-            pose=sapien.Pose(q=euler2quat(0, 0, np.pi / 2)),
+    urdf_config = dict(
+        _materials=dict(
+            gripper=dict(static_friction=2, dynamic_friction=2, restitution=0.0)
         ),
-        zero=Keyframe(
-            qpos=np.array([0.0] * 6),
-            pose=sapien.Pose(q=euler2quat(0, 0, np.pi / 2)),
+        link=dict(
+            gripper_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
+            moving_jaw_so101_v1_link=dict(material="gripper", patch_radius=0.1, min_patch_radius=0.1),
         ),
     )
+    
+    @classmethod
+    def configure_from_cfg(cls, cfg):
+        """Configure SO101 class attributes from Hydra config before environment creation.
+        
+        Must be called BEFORE gym.make() since these class attributes are read during agent init.
+        
+        Args:
+            cfg: Hydra config object with optional cfg.env.robot_urdf and cfg.env.gripper_physics
+        """
+        # Set custom robot URDF path if specified
+        if "robot_urdf" in cfg.env:
+            cls.urdf_path = cfg.env.robot_urdf
+        
+        # Apply gripper physics config
+        if "gripper_physics" in cfg.env:
+            gripper_cfg = cfg.env.gripper_physics
+            
+            cls.urdf_config["_materials"]["gripper"] = dict(
+                static_friction=gripper_cfg.get("static_friction", 2.0),
+                dynamic_friction=gripper_cfg.get("dynamic_friction", 2.0),
+                restitution=gripper_cfg.get("restitution", 0.0),
+            )
+            cls.urdf_config["link"]["gripper_link"] = dict(
+                material="gripper",
+                patch_radius=gripper_cfg.get("patch_radius", 0.1),
+                min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
+            )
+            cls.urdf_config["link"]["moving_jaw_so101_v1_link"] = dict(
+                material="gripper",
+                patch_radius=gripper_cfg.get("patch_radius", 0.1),
+                min_patch_radius=gripper_cfg.get("min_patch_radius", 0.1),
+            )
 
     arm_joint_names = [
         "shoulder_pan",

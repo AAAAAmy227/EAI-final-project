@@ -9,6 +9,7 @@ defaults:
 # Experiment settings
 exp_name: null
 seed: 1
+device_id: 0  # GPU device ID for simulation and rendering (e.g., 0, 1, 2...)
 
 # Logging
 wandb:
