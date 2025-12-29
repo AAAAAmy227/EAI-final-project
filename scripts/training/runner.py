@@ -139,6 +139,7 @@ class PPORunner:
         
         # Episode return tracking (per-env accumulator)
         self.episode_returns = torch.zeros(self.num_envs, device=self.device)
+        self.global_step_burnin = None
         
         # Handle timeout termination (if True, truncated episodes bootstrap)
         self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
@@ -416,217 +417,56 @@ class PPORunner:
         print(f"Total Timesteps: {self.total_timesteps}, Batch Size: {self.batch_size}")
         print(f"{'='*60}\n")
         
-        # Initial reset (obs already flattened and normalized by wrappers)
+        # Initial reset
         next_obs, _ = self.envs.reset(seed=self.cfg.seed)
         next_bootstrap_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
-        global_step_burnin = None
-        training_time = 0.0  # Accumulated training time (excludes eval)
+        self.global_step_burnin = None
+        training_time = 0.0
         measure_burnin = 2
-        iter_start_time = None
         
         for iteration in pbar:
             if iteration == measure_burnin:
-                global_step_burnin = self.global_step
-                training_time = 0.0  # Reset timer to skip initialization/warmup overhead
+                self.global_step_burnin = self.global_step
+                training_time = 0.0
             
-            # Start timing this iteration (training only)
             iter_start_time = time.time()
             
-            # LR Annealing
-            if self.anneal_lr:
-                frac = 1.0 - (iteration - 1.0) / self.num_iterations
-                lrnow = frac * self.cfg.ppo.learning_rate
-                self.optimizer.param_groups[0]["lr"].copy_(lrnow)
+            # Learning rate annealing
+            self._schedule_learning_rate(iteration)
             
-            # Mark step for cudagraph
+            # Cudagraph marker
             torch.compiler.cudagraph_mark_step_begin()
             
             # Rollout
             next_obs, next_bootstrap_mask, container = self._rollout(next_obs, next_bootstrap_mask)
             self.global_step += container.numel()
             
-            # GAE Calculation
-            # next_obs is already normalized by NormalizeObservationGPU wrapper
-            with torch.no_grad():
-                next_value = self.get_value(next_obs)
+            # GAE calculation
+            container = self._compute_gae(container, next_obs, next_bootstrap_mask)
             
-            advs, rets = self.gae_fn(
-                container["rewards"],
-                container["vals"],
-                container["bootstrap_mask"],
-                next_value,
-                next_bootstrap_mask
-            )
-            container["advantages"] = advs
-            container["returns"] = rets
+            # PPO update
+            out, clipfracs = self._run_ppo_update(container)
             
-            # Flatten for PPO Update
-            container_flat = container.view(-1)
-            
-            # PPO Update (with clipfrac accumulation like CleanRL)
-            clipfracs = []
-            for epoch in range(self.cfg.ppo.update_epochs):
-                b_inds = torch.randperm(container_flat.shape[0], device=self.device).split(self.minibatch_size)
-                for b in b_inds:
-                    container_local = container_flat[b]
-                    out = self.update_fn(container_local, tensordict_out=tensordict.TensorDict())
-                    clipfracs.append(out["clipfrac"].item())
-                    
-                    if self.cfg.ppo.target_kl is not None and out["approx_kl"] > self.cfg.ppo.target_kl:
-                        break
-                else:
-                    continue
-                break
-            
-            # Sync params to inference agent (only needed for CudaGraph)
+            # Sync params to inference agent (CudaGraph only)
             if self.cudagraphs:
                 from_module(self.agent).data.to_module(self.agent_inference)
             
-            # Logging (every iteration after burnin)
-            if global_step_burnin is not None and training_time > 0:
-                speed = (self.global_step - global_step_burnin) / training_time
-                avg_return = np.array(self.avg_returns).mean() if self.avg_returns else 0
-                lr = self.optimizer.param_groups[0]["lr"]
-                if isinstance(lr, torch.Tensor):
-                    lr = lr.item()
-                
-                pbar.set_description(
-                    f"SPS: {speed:.0f}, return: {avg_return:.2f}, lr: {lr:.2e}"
-                )
-                
-                # Compute explained variance
-                y_pred = container["vals"].flatten().cpu().numpy()
-                y_true = container["returns"].flatten().cpu().numpy()
-                var_y = np.var(y_true)
-                explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-                
-                pbar.set_description(
-                    f"SPS: {speed:.0f}, return: {avg_return:.2f}, lr: {lr:.2e}"
-                )
-                
-                logs = {
-                    "charts/SPS": speed,
-                    "charts/learning_rate": lr,
-                    "charts/terminated_count": self.terminated_count,
-                    "charts/truncated_count": self.truncated_count,
-                    "losses/value_loss": out["v_loss"].item(),
-                    "losses/policy_loss": out["pg_loss"].item(),
-                    "losses/entropy": out["entropy_loss"].item(),
-                    "losses/approx_kl": out["approx_kl"].item(),
-                    "losses/old_approx_kl": out["old_approx_kl"].item(),
-                    "losses/clipfrac": np.mean(clipfracs),  # Average over all minibatches (CleanRL style)
-                    "losses/explained_variance": explained_var,
-                    "losses/grad_norm": out["gn"].item() if isinstance(out["gn"], torch.Tensor) else out["gn"],
-                    "rollout/ep_return_mean": avg_return,
-                    "rollout/rewards_mean": container["rewards"].mean().item(),
-                    "rollout/rewards_max": container["rewards"].max().item(),
-                }
-                
-                # Add reward components (averaged over entire rollout)
-                if self.reward_component_count > 0:
-                    for name, total in self.reward_component_sum.items():
-                        logs[f"reward/{name}"] = total / self.reward_component_count
-                    # Add success/fail counts (sync to CPU only here)
-                    logs["reward/success_count"] = self.success_count.item() if hasattr(self.success_count, 'item') else self.success_count
-                    logs["reward/fail_count"] = self.fail_count.item() if hasattr(self.fail_count, 'item') else self.fail_count
-                    # Reset for next rollout (keep as GPU tensors)
-                    self.reward_component_sum = {}
-                    self.reward_component_count = 0
-                    self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)
-                    self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)
-                
-                # Log observation statistics (for monitoring normalization quality)
-                # Ideal: normalized mean ≈ 0, std ≈ 1 indicates good normalization
-                if self.log_obs_stats:
-                    obs_rms_std = torch.sqrt(torch.clamp(self.obs_rms_var, min=1e-8))
-                    
-                    # Log RunningMeanStd statistics (used for normalization)
-                    logs["obs_norm/rms_mean_avg"] = self.obs_rms_mean.mean().item()
-                    logs["obs_norm/rms_std_avg"] = obs_rms_std.mean().item()
-                    logs["obs_norm/rms_count"] = self.obs_rms_count.item()
-                    
-                    # Log raw observation stats (from this rollout, before normalization)
-                    raw_obs = container["obs"]  # [num_steps, num_envs, n_obs]
-                    raw_mean = raw_obs.mean(dim=(0, 1))  # [n_obs]
-                    raw_std = raw_obs.std(dim=(0, 1))    # [n_obs]
-                    logs["obs_raw/mean_avg"] = raw_mean.mean().item()
-                    logs["obs_raw/std_avg"] = raw_std.mean().item()
-                    logs["obs_raw/min"] = raw_obs.min().item()
-                    logs["obs_raw/max"] = raw_obs.max().item()
-                    
-                    # Log normalized observation stats (after normalization)
-                    if self.normalize_obs:
-                        norm_obs = (raw_obs - self.obs_rms_mean) / obs_rms_std
-                        norm_obs_clipped = torch.clamp(norm_obs, -self.obs_clip, self.obs_clip)
-                        logs["obs_normalized/mean_avg"] = norm_obs_clipped.mean().item()
-                        logs["obs_normalized/std_avg"] = norm_obs_clipped.std().item()
-                        logs["obs_normalized/min"] = norm_obs_clipped.min().item()
-                        logs["obs_normalized/max"] = norm_obs_clipped.max().item()
-                    
-                    from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
-                    
-                    # Log Observation statistics from wrapper
-                    obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
-                    
-                    if obs_wrapper is not None:
-                        obs_rms = obs_wrapper.rms
-                        obs_rms_std = torch.sqrt(obs_rms.var + 1e-8)
-                        for i, name in enumerate(self.obs_names):
-                            if i < len(obs_rms.mean):
-                                logs[f"obs_rms_mean/{name}"] = obs_rms.mean[i].item()
-                                logs[f"obs_rms_std/{name}"] = obs_rms_std[i].item()
-
-                    # Log Reward statistics from wrapper
-                    reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
-                    
-                    if reward_wrapper is not None:
-                        r_rms = reward_wrapper.rms
-                        logs["reward_norm/return_rms_var"] = r_rms.var.item()
-                        logs["reward_norm/return_rms_std"] = torch.sqrt(r_rms.var + 1e-8).item()
-                        logs["reward_norm/return_rms_mean"] = r_rms.mean.item()
-                        logs["reward_norm/return_rms_count"] = r_rms.count if isinstance(r_rms.count, (int, float)) else r_rms.count.item()
-                        logs["reward_norm/normalized_reward_mean"] = container["rewards"].mean().item()
-                        logs["reward_norm/normalized_reward_std"] = container["rewards"].std().item()
-
-                if self.cfg.wandb.enabled:
-                    wandb.log(logs, step=self.global_step)
-                    
-            # Accumulate training time for this iteration
+            # Logging
+            if self.global_step_burnin is not None and training_time > 0:
+                self._log_training_metrics(iteration, container, out, clipfracs, training_time)
+                avg_return = np.mean(self.avg_returns) if self.avg_returns else 0
+                pbar.set_description(f"SPS: {(self.global_step - self.global_step_burnin) / training_time:.0f}, return: {avg_return:.2f}")
+            
+            # Accumulate training time
             training_time += time.time() - iter_start_time
             
-            # Evaluation (async or sync based on config)
+            # Evaluation
             if iteration % self.cfg.training.eval_freq == 0:
-                if self.async_eval:
-                    # Async eval: launch in background, don't block training
-                    if self.eval_thread is not None and self.eval_thread.is_alive():
-                        # Wait for previous eval to finish before starting new one
-                        self.eval_thread.join()
-                    
-                    # Copy current weights to separate eval_agent (no race condition)
-                    # Note: We don't bother syncing logstd_init here as eval_agent is just for inference
-                    self.eval_agent.load_state_dict(self.agent.state_dict())
-                    
-                    # Launch async eval
-                    self.eval_thread = threading.Thread(
-                        target=self._evaluate_async,
-                        args=(iteration,),
-                        daemon=True
-                    )
-                    self.eval_thread.start()
-                    print(f"  [Async] Eval launched in background (iteration {iteration})")
-                else:
-                    # Sync eval (blocking)
-                    eval_start = time.time()
-                    self._evaluate()
-                    eval_duration = time.time() - eval_start
-                    print(f"  Eval took {eval_duration:.2f}s")
-                    if self.cfg.wandb.enabled:
-                        wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
-                    self._save_checkpoint(iteration)
+                self._handle_evaluation(iteration)
         
-        # Wait for any running async eval to complete before cleanup
+        # Cleanup
         if self.async_eval and self.eval_thread is not None and self.eval_thread.is_alive():
             print("Waiting for async eval to complete...")
             self.eval_thread.join()
@@ -634,6 +474,205 @@ class PPORunner:
         self.envs.close()
         self.eval_envs.close()
         print("Training complete!")
+
+    def _schedule_learning_rate(self, iteration: int):
+        """Anneal learning rate linearly over training."""
+        if self.anneal_lr:
+            frac = 1.0 - (iteration - 1.0) / self.num_iterations
+            lrnow = frac * self.cfg.ppo.learning_rate
+            self.optimizer.param_groups[0]["lr"].copy_(lrnow)
+
+    def _compute_gae(self, container, next_obs, next_bootstrap_mask):
+        """Compute GAE advantages and returns.
+        
+        Args:
+            container: TensorDict with rollout data (rewards, vals, bootstrap_mask)
+            next_obs: Final observations after rollout
+            next_bootstrap_mask: Bootstrap mask for final step
+            
+        Returns:
+            Updated container with 'advantages' and 'returns' added
+        """
+        with torch.no_grad():
+            # next_obs is already normalized by wrapper
+            next_value = self.get_value(next_obs)
+        
+        advs, rets = self.gae_fn(
+            container["rewards"],
+            container["vals"],
+            container["bootstrap_mask"],
+            next_value,
+            next_bootstrap_mask
+        )
+        container["advantages"] = advs
+        container["returns"] = rets
+        return container
+
+    def _run_ppo_update(self, container):
+        """Run PPO update epochs.
+        
+        Args:
+            container: TensorDict with obs, actions, logprobs, advantages, returns
+            
+        Returns:
+            dict with final update metrics (v_loss, pg_loss, entropy_loss, etc.)
+            list of clipfracs from all minibatches
+        """
+        container_flat = container.view(-1)
+        clipfracs = []
+        
+        for epoch in range(self.cfg.ppo.update_epochs):
+            b_inds = torch.randperm(container_flat.shape[0], device=self.device).split(self.minibatch_size)
+            for b in b_inds:
+                container_local = container_flat[b]
+                out = self.update_fn(container_local, tensordict_out=tensordict.TensorDict())
+                clipfracs.append(out["clipfrac"].item())
+                
+                if self.cfg.ppo.target_kl is not None and out["approx_kl"] > self.cfg.ppo.target_kl:
+                    break
+            else:
+                continue
+            break
+        
+        return out, clipfracs
+
+    def _log_training_metrics(self, iteration: int, container, out, clipfracs, training_time: float):
+        """Build and log training metrics to console and WandB.
+        
+        Args:
+            iteration: Current training iteration
+            container: TensorDict with rollout data
+            out: Dict with final PPO update metrics
+            clipfracs: List of clip fractions from all minibatches
+            training_time: Accumulated training time in seconds
+        """
+        if training_time <= 0:
+            return {}
+        
+        speed = (self.global_step - self.global_step_burnin) / training_time
+        avg_return = np.mean(self.avg_returns) if self.avg_returns else 0
+        lr = self.optimizer.param_groups[0]["lr"]
+        if isinstance(lr, torch.Tensor):
+            lr = lr.item()
+        
+        # Explained variance
+        y_pred = container["vals"].flatten().cpu().numpy()
+        y_true = container["returns"].flatten().cpu().numpy()
+        var_y = np.var(y_true)
+        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        
+        # Build base logs
+        logs = {
+            "charts/SPS": speed,
+            "charts/learning_rate": lr,
+            "charts/terminated_count": self.terminated_count,
+            "charts/truncated_count": self.truncated_count,
+            "losses/value_loss": out["v_loss"].item(),
+            "losses/policy_loss": out["pg_loss"].item(),
+            "losses/entropy": out["entropy_loss"].item(),
+            "losses/approx_kl": out["approx_kl"].item(),
+            "losses/old_approx_kl": out["old_approx_kl"].item(),
+            "losses/clipfrac": np.mean(clipfracs),
+            "losses/explained_variance": explained_var,
+            "losses/grad_norm": out["gn"].item() if isinstance(out["gn"], torch.Tensor) else out["gn"],
+            "rollout/ep_return_mean": avg_return,
+            "rollout/rewards_mean": container["rewards"].mean().item(),
+            "rollout/rewards_max": container["rewards"].max().item(),
+        }
+        
+        # Add reward components
+        logs.update(self._build_reward_component_logs())
+        
+        # Add observation stats if enabled
+        if self.log_obs_stats:
+            logs.update(self._build_obs_stats_logs(container))
+        
+        # Log to WandB
+        if self.cfg.wandb.enabled:
+            wandb.log(logs, step=self.global_step)
+        
+        return logs
+
+    def _build_reward_component_logs(self) -> dict:
+        """Build reward component logs and reset accumulators."""
+        logs = {}
+        
+        if self.reward_component_count > 0:
+            for name, total in self.reward_component_sum.items():
+                logs[f"reward/{name}"] = total / self.reward_component_count
+            logs["reward/success_count"] = self.success_count.item() if hasattr(self.success_count, 'item') else self.success_count
+            logs["reward/fail_count"] = self.fail_count.item() if hasattr(self.fail_count, 'item') else self.fail_count
+            
+            # Reset accumulators
+            self.reward_component_sum = {}
+            self.reward_component_count = 0
+            self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)
+            self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)
+        
+        return logs
+
+    def _build_obs_stats_logs(self, container) -> dict:
+        """Build observation statistics logs."""
+        from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
+        
+        logs = {}
+        
+        # Raw observation stats
+        raw_obs = container["obs"]
+        raw_mean = raw_obs.mean(dim=(0, 1))
+        raw_std = raw_obs.std(dim=(0, 1))
+        logs["obs_raw/mean_avg"] = raw_mean.mean().item()
+        logs["obs_raw/std_avg"] = raw_std.mean().item()
+        logs["obs_raw/min"] = raw_obs.min().item()
+        logs["obs_raw/max"] = raw_obs.max().item()
+        
+        # Obs wrapper stats
+        obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
+        if obs_wrapper is not None:
+            obs_rms = obs_wrapper.rms
+            obs_rms_std = torch.sqrt(obs_rms.var + 1e-8)
+            for i, name in enumerate(self.obs_names):
+                if i < len(obs_rms.mean):
+                    logs[f"obs_rms_mean/{name}"] = obs_rms.mean[i].item()
+                    logs[f"obs_rms_std/{name}"] = obs_rms_std[i].item()
+        
+        # Reward wrapper stats
+        reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
+        if reward_wrapper is not None:
+            r_rms = reward_wrapper.rms
+            logs["reward_norm/return_rms_var"] = r_rms.var.item()
+            logs["reward_norm/return_rms_std"] = torch.sqrt(r_rms.var + 1e-8).item()
+            logs["reward_norm/return_rms_mean"] = r_rms.mean.item()
+            logs["reward_norm/return_rms_count"] = r_rms.count if isinstance(r_rms.count, (int, float)) else r_rms.count.item()
+            logs["reward_norm/normalized_reward_mean"] = container["rewards"].mean().item()
+            logs["reward_norm/normalized_reward_std"] = container["rewards"].std().item()
+        
+        return logs
+
+    def _handle_evaluation(self, iteration: int):
+        """Handle evaluation scheduling (sync or async)."""
+        if self.async_eval:
+            # Async eval: launch in background
+            if self.eval_thread is not None and self.eval_thread.is_alive():
+                self.eval_thread.join()
+            
+            self.eval_agent.load_state_dict(self.agent.state_dict())
+            self.eval_thread = threading.Thread(
+                target=self._evaluate_async,
+                args=(iteration,),
+                daemon=True
+            )
+            self.eval_thread.start()
+            print(f"  [Async] Eval launched in background (iteration {iteration})")
+        else:
+            # Sync eval (blocking)
+            eval_start = time.time()
+            self._evaluate()
+            eval_duration = time.time() - eval_start
+            print(f"  Eval took {eval_duration:.2f}s")
+            if self.cfg.wandb.enabled:
+                wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
+            self._save_checkpoint(iteration)
 
     def _evaluate(self, agent=None):
         """Run evaluation episodes.
