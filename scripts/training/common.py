@@ -114,7 +114,137 @@ class NormalizeRewardGPU(gym.Wrapper):
         
         return obs, normalized_reward, terminated, truncated, info
 
+class SingleArmWrapper(gym.Wrapper):
+    """Filters observation and maps action for single-arm tasks.
+    
+    Transforms a multi-arm environment into a single-arm one by:
+    1. Exposing only the right arm action space (as a Dict).
+    2. Filtering out left arm data from agent observations.
+    
+    Requires obs_mode='state_dict'.
+    """
+    def __init__(self, env, right_arm_key="so101-1", left_arm_key="so101-0"):
+        super().__init__(env)
+        self.right_arm_key = right_arm_key
+        self.left_arm_key = left_arm_key
+        
+        from mani_skill.utils.gym_utils import batch_space
+        
+        # Must use state_dict for structural filtering
+        assert self.base_env.obs_mode == "state_dict", f"SingleArmWrapper requires state_dict mode, got {self.base_env.obs_mode}"
+        
+        # Keep Action Space as a Dict, but only with the right arm
+        # This allows FlattenActionWrapper to handle the flattening and naming later
+        self.single_action_space = gym.spaces.Dict({
+            self.right_arm_key: self.env.single_action_space[self.right_arm_key]
+        })
+        self.action_space = batch_space(self.single_action_space, n=self.base_env.num_envs)
+        
+        # Update observation space by informing BaseEnv of the filtered structure
+        raw_obs = self.base_env._init_raw_obs
+        filtered_raw_obs = self._filter_obs(raw_obs)
+        self.base_env.update_obs_space(filtered_raw_obs)
 
+    @property
+    def base_env(self):
+        return self.env.unwrapped
+
+    def _filter_obs(self, obs):
+        """Remove left arm from agent dict."""
+        if "agent" in obs and self.left_arm_key in obs["agent"]:
+            agent_dict = obs["agent"]
+            filtered_agent = {self.right_arm_key: agent_dict[self.right_arm_key]}
+            return {**obs, "agent": filtered_agent}
+        return obs
+
+    def action(self, action_dict):
+        """Map Filtered Dict Action (right arm only) to Full Multi-Agent Dict."""
+        # This receives a dict from FlattenActionWrapper
+        right_action = action_dict[self.right_arm_key]
+        left_zeros = torch.zeros_like(right_action)
+        return {
+            self.right_arm_key: right_action,
+            self.left_arm_key: left_zeros
+        }
+
+    def step(self, action):
+        # action here might be a Dict coming from FlattenActionWrapper
+        obs, reward, terminated, truncated, info = self.env.step(self.action(action))
+        return self._filter_obs(obs), reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        return self._filter_obs(obs), info
+
+
+class FlattenActionWrapper(gym.ActionWrapper):
+    """Flattens Dict action space into Tensor with Semantic joint name tracking.
+    
+    Calculates action_names (e.g., 'action/so101-1/shoulder_pan') based on agent metadata.
+    Designed for torch.compile optimizations.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        from mani_skill.utils.gym_utils import batch_space
+        
+        self._action_names = []
+        self._leaf_info = [] # List of (key, start, end, original_shape)
+        
+        start_idx = 0
+        # Determine joint names from the agent if possible
+        # For ManiSkill Track1, we know the SO101 joint order
+        joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        
+        for k, space in self.env.single_action_space.items():
+            dim = int(np.prod(space.shape))
+            end_idx = start_idx + dim
+            
+            # Record joint names
+            if dim == len(joint_names):
+                self._action_names.extend([f"action/{k}/{j}" for j in joint_names])
+            else:
+                self._action_names.extend([f"action/{k}_{i}" for i in range(dim)])
+                
+            self._leaf_info.append((k, start_idx, end_idx, space.shape))
+            start_idx = end_idx
+            
+        # Update action space to flattened Box
+        self.single_action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(start_idx,), dtype=np.float32
+        )
+        self.action_space = batch_space(self.single_action_space, n=self.base_env.num_envs)
+        
+        # Optimize action method
+        if hasattr(torch, "compile"):
+            self.action = torch.compile(self.action, mode="reduce-overhead")
+            
+        print(f"[FlattenActionWrapper] Flattened {len(self._leaf_info)} agents into {start_idx} action dims.")
+
+    @property
+    def base_env(self):
+        return self.env.unwrapped
+        
+    @property
+    def action_names(self):
+        return self._action_names
+
+    def action(self, action_tensor):
+        """Unflatten Tensor to Dict for underlying environment.
+        
+        Optimized for torch.compile (static slice and dict creation).
+        """
+        results = {}
+        for key, start, end, shape in self._leaf_info:
+            # Slice and reshape if necessary
+            val = action_tensor[:, start:end]
+            if len(shape) > 1:
+                val = val.reshape(-1, *shape)
+            results[key] = val
+        return results
+
+
+#NOTE： this is only suited for state-dict obs mode on gpu tensor cases
+#NOTE: add support for rgb if we need one day. ask human if agent want to change here.
 class FlattenStateWrapper(gym.ObservationWrapper):
     """Flattens dict observations into a single vector, with dimension name tracking.
     
@@ -287,8 +417,8 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         render_backend=render_backend,
     )
 
-    from mani_skill.utils.wrappers import FlattenObservationWrapper
-    from mani_skill.utils.wrappers import FlattenActionSpaceWrapper
+    # from mani_skill.utils.wrappers import FlattenObservationWrapper
+    # from mani_skill.utils.wrappers import FlattenActionSpaceWrapper
     # from mani_skill.utils.wrappers import FlattenRGBDObservationWrapper
     
     reconfiguration_freq = 1 if for_eval else None
@@ -303,6 +433,13 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
         **env_kwargs
     )
     
+    # Decouple single-arm logic using a wrapper for lift/stack tasks
+    if cfg.env.task in ["lift", "stack"]:
+        env = SingleArmWrapper(env)
+    
+    # Flatten Action space and track joint names
+    env = FlattenActionWrapper(env)
+
     # Flatten state_dict observations to tensor (with obs_names tracking)
     env = FlattenStateWrapper(env)
 
@@ -316,7 +453,8 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
             save_on_reset=False,
             max_steps_per_video=int(1e6),
             video_fps=30,
-            info_on_video=False,
+            info_on_video=True,
+            render_substeps=False,
         )
 
     # Wrap with ManiSkillVectorEnv (different config for training vs eval)

@@ -167,13 +167,8 @@ class Track1Env(BaseEnv):
         # Precompute camera processing maps if needed (after super init so device is ready)
         self._setup_camera_processing_maps()
         
-        # Set single_arm_mode BEFORE super init (needed in _setup_sensors)
-        self.single_arm_mode = task in ["lift", "stack"]
-            
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
-
         self._setup_device()
-        self._setup_single_arm_action_space()
 
     def get_obs_structure(self):
         """The unbatched, hierarchical observation space for descriptive logging.
@@ -339,31 +334,7 @@ class Track1Env(BaseEnv):
         # EMA of task success rate (initialized lazily when device is available)
         self.task_success_rate = None
 
-    def _setup_single_arm_action_space(self):
-        """For lift/stack tasks, only expose right arm action space."""
-        import gymnasium as gym
-        from gymnasium.vector.utils import batch_space
-        
-        # Check if this is a single-arm task
-        self.single_arm_mode = self.task in ["lift", "stack"]
-        
-        if self.single_arm_mode and self.agent is not None:
-            # Original action space is Dict({'so101-0': Box, 'so101-1': Box})
-            # so101-0 is at X=0.119 (left), so101-1 is at X=0.481 (right)
-            # For single-arm tasks, we use the RIGHT arm (so101-1)
-            if isinstance(self.single_action_space, gym.spaces.Dict):
-                # Right arm is so101-1 (larger X coordinate)
-                self._right_arm_key = "so101-1"
-                self._left_arm_key = "so101-0"
-                
-                right_arm_space = self.single_action_space[self._right_arm_key]
-                
-                # Override action spaces to only expose right arm
-                self.single_action_space = right_arm_space
-                self.action_space = batch_space(self.single_action_space, n=self.num_envs)
-                
-                # Store original for step() to reconstruct full action
-                self._left_arm_action_dim = self.agent.single_action_space[self._left_arm_key].shape[0]
+
 
     def _setup_device(self):
         assert hasattr(self, 'device')
@@ -687,26 +658,6 @@ class Track1Env(BaseEnv):
         return obs, info
 
     def step(self, action):
-        # For single-arm mode (lift/stack), convert single-arm action to full multi-arm action
-        if getattr(self, 'single_arm_mode', False) and hasattr(self, '_left_arm_action_dim'):
-            import torch
-            # action is a tensor of shape (num_envs, right_arm_action_dim)
-            # We need to convert it to a dict for the multi-agent
-            if isinstance(action, (np.ndarray, torch.Tensor)):
-                if isinstance(action, np.ndarray):
-                    action = torch.tensor(action, device=self.device, dtype=torch.float32)
-                
-                # Create full action dict with zeros for left arm
-                left_arm_zeros = torch.zeros(
-                    (action.shape[0], self._left_arm_action_dim), 
-                    device=self.device, 
-                    dtype=action.dtype
-                )
-                action = {
-                    self._right_arm_key: action,
-                    self._left_arm_key: left_arm_zeros,
-                }
-        
         obs, reward, terminated, truncated, info = super().step(action)
         if self.camera_mode != "direct_pinhole":
             obs = self._apply_camera_processing(obs)
@@ -715,12 +666,6 @@ class Track1Env(BaseEnv):
     def _get_obs_state_dict(self, info: dict):
         """Override to filter left arm obs and apply normalization."""
         obs = super()._get_obs_state_dict(info)
-        
-        if self.single_arm_mode and "agent" in obs:
-            # Remove left arm (so101-0) from agent observations
-            # Right arm is so101-1 (larger X coordinate)
-            if "so101-0" in obs["agent"]:
-                del obs["agent"]["so101-0"]
         
         # Apply agent state normalization
         if self.obs_normalize_enabled and "agent" in obs:

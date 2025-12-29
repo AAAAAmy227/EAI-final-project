@@ -193,38 +193,12 @@ class PPORunner:
         self.reward_mode = cfg.reward.get("reward_mode", "sparse")
         self.staged_reward = self.reward_mode == "staged_dense"
         
-        if hasattr(self.envs.unwrapped, "agent"):
-            agent = self.envs.unwrapped.agent
-            if hasattr(agent, "controller"):
-                ctrl = agent.controller
-                if isinstance(ctrl, dict):
-                    # MultiAgent setup: agent.controller is a dict of sub-controllers
-                    all_joint_names = []
-                    for agent_id, sub_ctrl in ctrl.items():
-                        if hasattr(sub_ctrl, "joints"):
-                            all_joint_names.extend([f"{agent_id}/{j.name}" for j in sub_ctrl.joints])
-                    
-                    if len(all_joint_names) == self.n_act:
-                        self.joint_names = all_joint_names
-                    elif self.n_act == 6 and len(all_joint_names) == 12:
-                        # Specific heuristic for Track1Env single-arm tasks (which use so101-1)
-                        if "so101-1" in ctrl:
-                            self.joint_names = [j.name for j in ctrl["so101-1"].joints]
-                        else:
-                            # Fallback to the last agent's joints if n_act matches
-                            last_ctrl = list(ctrl.values())[-1]
-                            self.joint_names = [j.name for j in last_ctrl.joints]
-                    else:
-                        # Fallback to generic names if ambiguous
-                        self.joint_names = [f"act_{i}" for i in range(self.n_act)]
-                elif hasattr(ctrl, "joints"):
-                    self.joint_names = [j.name for j in ctrl.joints]
-                else:
-                    self.joint_names = [f"act_{i}" for i in range(self.n_act)]
-            else:
-                self.joint_names = [f"act_{i}" for i in range(self.n_act)]
-        else:
-            self.joint_names = [f"act_{i}" for i in range(self.n_act)]
+        # Manage Action Names for logging
+        self.action_names = self._get_action_names_from_wrapper()
+        if len(self.action_names) != self.n_act:
+            print(f"Warning: action_names count ({len(self.action_names)}) does not match n_act ({self.n_act}).")
+            self.action_names = [f"act_{i}" for i in range(self.n_act)]
+        print(f"Action names for logging (count: {len(self.action_names)})")
         
         # Async eval infrastructure
         self.async_eval = cfg.get("async_eval", True)  # Enable async eval by default
@@ -299,6 +273,31 @@ class PPORunner:
         # Fallback to generic names
         print("Warning: FlattenStateWrapper not found, using generic obs names")
         return [f"obs_{i}" for i in range(self.n_obs)]
+
+    def _get_action_names_from_wrapper(self) -> list:
+        """Get action names from FlattenActionWrapper.
+        
+        Traverses the wrapper chain to find FlattenActionWrapper and return its action_names.
+        Falls back to generic naming if not found.
+        """
+        from scripts.training.common import FlattenActionWrapper
+        
+        # Traverse wrapper chain to find FlattenActionWrapper
+        curr_env = self.envs
+        while curr_env is not None:
+            if isinstance(curr_env, FlattenActionWrapper):
+                return curr_env.action_names
+            # Try to go deeper in wrapper chain
+            if hasattr(curr_env, "_env"):
+                curr_env = curr_env._env
+            elif hasattr(curr_env, "env"):
+                curr_env = curr_env.env
+            else:
+                break
+        
+        # Fallback to generic names
+        print("Warning: FlattenActionWrapper not found, using generic action names")
+        return [f"act_{i}" for i in range(self.n_act)]
 
     def _initialize_obs_stats_from_config(self):
         """Initialize obs_ema_mean and obs_ema_var from environment config."""
@@ -721,7 +720,7 @@ class PPORunner:
                 # Log per-joint action std (for monitoring policy convergence)
                 with torch.no_grad():
                     action_std_vec = torch.exp(self.agent.actor_logstd).flatten()
-                    for i, name in enumerate(self.joint_names):
+                    for i, name in enumerate(self.action_names):
                         if i < len(action_std_vec):
                             logs[f"action_std/{name}"] = action_std_vec[i].item()
                 
