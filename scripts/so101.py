@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import copy
 import sapien
@@ -8,6 +9,8 @@ from mani_skill.agents.controllers import *
 from mani_skill.agents.registration import register_agent
 from mani_skill.utils import common
 from mani_skill.sensors.camera import CameraConfig
+
+logger = logging.getLogger(__name__)
 
 @register_agent()
 class SO101(BaseAgent):
@@ -105,7 +108,7 @@ class SO101(BaseAgent):
 
     @property
     def _sensor_configs(self):
-        print("DEBUG: SO101._sensor_configs called")
+        logger.debug("SO101._sensor_configs called")
         return [
             CameraConfig(
                 "wrist_camera",
@@ -210,7 +213,7 @@ class SO101(BaseAgent):
             self.finger1_tip = self.robot.links_map["gripper_link_tip"]
             self.finger2_tip = self.robot.links_map["moving_jaw_so101_v1_link_tip"]
         except KeyError:
-            print("Warning: Fingertip links not found. TCP calculation will fall back to gripper links.")
+            logger.warning("Fingertip links not found. TCP calculation will fall back to gripper links.")
             self.finger1_tip = self.finger1_link
             self.finger2_tip = self.finger2_link
 
