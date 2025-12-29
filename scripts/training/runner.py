@@ -416,9 +416,8 @@ class PPORunner:
         print(f"Total Timesteps: {self.total_timesteps}, Batch Size: {self.batch_size}")
         print(f"{'='*60}\n")
         
-        # Initial reset
+        # Initial reset (obs already flattened and normalized by wrappers)
         next_obs, _ = self.envs.reset(seed=self.cfg.seed)
-        next_obs = self._flatten_obs(next_obs).to(self.device)
         next_bootstrap_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
@@ -449,12 +448,9 @@ class PPORunner:
             self.global_step += container.numel()
             
             # GAE Calculation
-            # bootstrap_mask controls when to stop bootstrapping:
-            # - handle_timeout_termination=True: only terminated stops bootstrap (truncated continues)
-            # - handle_timeout_termination=False: both stop bootstrap (CleanRL default)
+            # next_obs is already normalized by NormalizeObservationGPU wrapper
             with torch.no_grad():
-                norm_next_obs = self._normalize_obs(next_obs)
-                next_value = self.get_value(norm_next_obs)
+                next_value = self.get_value(next_obs)
             
             advs, rets = self.gae_fn(
                 container["rewards"],
@@ -465,11 +461,6 @@ class PPORunner:
             )
             container["advantages"] = advs
             container["returns"] = rets
-            
-            # CRITICAL FIX: Normalize observations BEFORE flattening for PPO update
-            # This ensures the update phase sees the same distribution as the rollout phase
-            if self.normalize_obs:
-                container["obs"] = self._normalize_obs(container["obs"])
             
             # Flatten for PPO Update
             container_flat = container.view(-1)
