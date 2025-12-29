@@ -125,6 +125,9 @@ class NormalizeRewardGPU(gym.Wrapper):
         done = terminated | truncated
         self.returns.mul_( (~done).float() )
         
+        # Pass raw reward in info for logging purposes
+        info["raw_reward"] = reward
+        
         return obs, normalized_reward, terminated, truncated, info
 
 class SingleArmWrapper(gym.Wrapper):

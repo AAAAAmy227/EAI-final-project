@@ -337,17 +337,7 @@ class PPORunner:
                         obs_wrapper.rms.var[idxs] = std_val ** 2
                         print(f"  Initialized {key} stats (scalar broadcast) at indices {idxs}")
 
-    def _normalize_obs(self, obs):
-        """No-op: Observation normalization is now handled by NormalizeObservationGPU wrapper."""
-        return obs
 
-    def _normalize_reward(self, reward, done):
-        """No-op: Reward normalization is now handled by NormalizeRewardGPU wrapper."""
-        return reward
-
-    def _flatten_obs(self, obs):
-        """No-op: Observation flattening is handled by FlattenStateWrapper."""
-        return obs
 
     def _step_env(self, action):
         """Execute environment step.
@@ -364,9 +354,8 @@ class PPORunner:
         """Collect trajectories with pre-allocated storage.
         
         Args:
-            obs: Current observations
-            bootstrap_mask: Mask for GAE bootstrap. If handle_timeout_termination=True,
-                           this is `terminated`. If False, this is `done` (terminated|truncated).
+            obs: Current observations (already flat and normalized)
+            bootstrap_mask: Mask for GAE bootstrap. 
         """
         # 1. Pre-allocate TensorDict (Zero-copy optimization)
         storage = tensordict.TensorDict({
@@ -379,16 +368,13 @@ class PPORunner:
         }, batch_size=[self.num_steps, self.num_envs], device=self.device)
 
         for step in range(self.num_steps):
-            # 2. In-place write (CleanRL style: store BEFORE step)
-            # IMPORTANT: Use storage['key'][step] NOT storage[step]['key'] for TensorDict
+            # 2. In-place write
             storage["obs"][step] = obs
-            storage["bootstrap_mask"][step] = bootstrap_mask  # Store PRE-step mask for GAE
+            storage["bootstrap_mask"][step] = bootstrap_mask
             
-            # Inference (no gradients during rollout)
+            # Inference (Normalization is already in obs)
             with torch.no_grad():
-                # Apply normalization BEFORE inference
-                norm_obs = self._normalize_obs(obs)
-                action, logprob, _, value = self.policy(obs=norm_obs)
+                action, logprob, _, value = self.policy(obs=obs)
             storage["vals"][step] = value.flatten()
             storage["actions"][step] = action
             storage["logprobs"][step] = logprob
@@ -396,98 +382,55 @@ class PPORunner:
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
             
-            # 1. Apply running reward normalization for TRAINING storage
-            # We use a separate variable for storage to preserve the raw reward for logging
-            normalized_reward = self._normalize_reward(reward, next_done)
-            storage["rewards"][step] = normalized_reward
+            # Rewards (normalized by wrapper for training)
+            storage["rewards"][step] = reward
             
-            # 2. Accumulate RAW reward for logging (so charts show real progress)
-            self.episode_returns += reward
+            # 2. Accumulate RAW reward for logging
+            raw_reward = infos.get("raw_reward", reward)
+            self.episode_returns += raw_reward
             
-            # Accumulate reward components for logging (mean over entire rollout)
-            # On auto_reset, ManiSkillVectorEnv moves original info to 'final_info'
+            # Record reward components/success/fail
             reward_comps = None
             if "reward_components" in infos:
                 reward_comps = infos["reward_components"]
             elif "final_info" in infos and "reward_components" in infos["final_info"]:
                 reward_comps = infos["final_info"]["reward_components"]
+            
             if reward_comps is not None:
                 for k, v in reward_comps.items():
-                    # Handle GPU tensors (convert to scalar if needed)
                     val = v.item() if hasattr(v, 'item') else v
                     self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + val
                 self.reward_component_count += 1
-            # Accumulate success/fail counts on GPU (no sync until logging)
-            # Check both top-level and final_info (ManiSkill moves info there on auto_reset)
-            success_val = None
-            fail_val = None
-            if "success_count" in infos:
-                success_val = infos["success_count"]
-            elif "final_info" in infos and "success_count" in infos["final_info"]:
-                success_val = infos["final_info"]["success_count"]
-            if "fail_count" in infos:
-                fail_val = infos["fail_count"]
-            elif "final_info" in infos and "fail_count" in infos["final_info"]:
-                fail_val = infos["final_info"]["fail_count"]
-            
-            if success_val is not None:
-                self.success_count += success_val if isinstance(success_val, torch.Tensor) else success_val
-            if fail_val is not None:
-                self.fail_count += fail_val if isinstance(fail_val, torch.Tensor) else fail_val
-            next_obs_flat = self._flatten_obs(next_obs)
-            # Accumulate episode returns
-            self.episode_returns += reward
-            
-            # Update observation statistics using Welford's online algorithm (for monitoring AND normalization)
-            if self.log_obs_stats or self.normalize_obs:
-                # Compute batch mean and var
-                batch_mean = obs.mean(dim=0)
-                batch_var = obs.var(dim=0, unbiased=False)
-                batch_count = obs.shape[0]
+
+            # Success/Fail counts
+            s_val = infos.get("success_count", None)
+            if s_val is None and "final_info" in infos:
+                s_val = infos["final_info"].get("success_count", None)
+            if s_val is not None:
+                self.success_count += s_val
                 
-                # Welford's online algorithm (parallel variance update)
-                delta = batch_mean - self.obs_rms_mean
-                total_count = self.obs_rms_count + batch_count
-                
-                # Update running mean
-                self.obs_rms_mean = self.obs_rms_mean + delta * batch_count / total_count
-                
-                # Update running variance using parallel formula (Chan et al.)
-                m_a = self.obs_rms_var * self.obs_rms_count
-                m_b = batch_var * batch_count
-                M2 = m_a + m_b + delta ** 2 * self.obs_rms_count * batch_count / total_count
-                self.obs_rms_var = M2 / total_count
-                self.obs_rms_count = total_count
-                
-                # Also update EMA for optional comparison (faster adaptation tracking)
-                self.obs_ema_mean.lerp_(batch_mean, self.obs_ema_tau)
-                self.obs_ema_var.lerp_(batch_var, self.obs_ema_tau)
-            
-            # Log episode info when episodes end
-            done = next_terminated | next_truncated
-            if done.any():
-                for idx in torch.where(done)[0]:
-                    # Track termination reason
+            f_val = infos.get("fail_count", None)
+            if f_val is None and "final_info" in infos:
+                f_val = infos["final_info"].get("fail_count", None)
+            if f_val is not None:
+                self.fail_count += f_val
+
+            # Log episodic returns
+            if next_done.any():
+                for idx in torch.where(next_done)[0]:
                     if next_terminated[idx].item():
                         self.terminated_count += 1
                     else:
                         self.truncated_count += 1
                     
-                    # Record completed episode return
-                    ep_return = self.episode_returns[idx].item()
-                    self.avg_returns.append(ep_return)
-                    self.episode_returns[idx] = 0.0  # Reset for next episode
-            
-            obs = next_obs_flat
-            # Choose bootstrap mask based on config
-            if self.handle_timeout_termination:
-                bootstrap_mask = next_terminated  # Only true terminations stop bootstrap
-            else:
-                bootstrap_mask = next_done  # CleanRL default: both stop bootstrap
+                    self.avg_returns.append(self.episode_returns[idx].item())
+                    self.episode_returns[idx] = 0.0
+
+            # Update for next iteration
+            obs = next_obs
+            bootstrap_mask = next_terminated if self.handle_timeout_termination else next_done
         
-        # Apply reward scale at the end of rollout (or before GAE)
         storage["rewards"] *= self.cfg.ppo.reward_scale
-        
         return obs, bootstrap_mask, storage
 
     def train(self):
@@ -780,12 +723,9 @@ class PPORunner:
         max_steps += 2
         
         for step in range(max_steps):
-            # CRITICAL: Flatten obs like train does, otherwise agent gets wrong input format
-            obs_flat = self._flatten_obs(eval_obs)
+            # eval_obs is already flat and normalized due to wrappers
             with torch.no_grad():
-                # Normalize observations for inference
-                norm_obs_flat = self._normalize_obs(obs_flat)
-                eval_action = agent.get_action(norm_obs_flat, deterministic=True)
+                eval_action = agent.get_action(eval_obs, deterministic=True)
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
             
             episode_rewards += reward
@@ -954,22 +894,39 @@ class PPORunner:
     def _save_checkpoint(self, iteration):
         """Save model checkpoint."""
         if self.cfg.save_model:
+            from scripts.training.common import NormalizeObservationGPU, NormalizeRewardGPU
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
             model_path = output_dir / f"iteration_{iteration}.pt"
+            
+            # Find wrappers to extract stats
+            obs_wrapper = None
+            reward_wrapper = None
+            curr_env = self.envs
+            while curr_env is not None:
+                if isinstance(curr_env, NormalizeObservationGPU):
+                    obs_wrapper = curr_env
+                elif isinstance(curr_env, NormalizeRewardGPU):
+                    reward_wrapper = curr_env
+                curr_env = getattr(curr_env, "env", None)
+
             state = {
                 "agent": self.agent.state_dict(),
-                # Observation normalization (RunningMeanStd)
-                "obs_rms_mean": self.obs_rms_mean,
-                "obs_rms_var": self.obs_rms_var,
-                "obs_rms_count": self.obs_rms_count,
-                # Reward normalization (RunningMeanStd for returns)
-                "return_rms_mean": self.return_rms_mean,
-                "return_rms_var": self.return_rms_var,
-                "return_rms_count": self.return_rms_count,
-                # Legacy EMA stats (for backward compatibility)
-                "obs_ema_mean": self.obs_ema_mean,
-                "obs_ema_var": self.obs_ema_var,
             }
+            
+            if obs_wrapper is not None:
+                state.update({
+                    "obs_rms_mean": obs_wrapper.rms.mean,
+                    "obs_rms_var": obs_wrapper.rms.var,
+                    "obs_rms_count": obs_wrapper.rms.count,
+                })
+            
+            if reward_wrapper is not None:
+                state.update({
+                    "return_rms_mean": reward_wrapper.rms.mean,
+                    "return_rms_var": reward_wrapper.rms.var,
+                    "return_rms_count": reward_wrapper.rms.count,
+                })
+
             torch.save(state, model_path)
             torch.save(state, output_dir / "latest.pt")
             print(f"Model and stats saved to {model_path}")
