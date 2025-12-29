@@ -193,14 +193,14 @@ class SingleArmWrapper(gym.Wrapper):
         self.right_arm_key = right_arm_key
         self.left_arm_key = left_arm_key
         
-        from mani_skill.utils.gym_utils import batch_space
+        from gymnasium.vector.utils import batch_space
         
         # Must use state_dict for structural filtering
         assert self.base_env.obs_mode == "state_dict", f"SingleArmWrapper requires state_dict mode, got {self.base_env.obs_mode}"
         
         # Verify the discovery
-        if self.right_arm_key not in self.env.single_action_space:
-             raise KeyError(f"SingleArmWrapper: Discoved right_arm_key '{self.right_arm_key}' not found in action space. Available: {list(self.env.single_action_space.keys())}")
+        if self.right_arm_key not in self.env.single_action_space.spaces:
+             raise KeyError(f"SingleArmWrapper: Discovered right_arm_key '{self.right_arm_key}' not found in action space. Available: {list(self.env.single_action_space.keys())}")
         
         # Keep Action Space as a Dict, but only with the right arm
         # This allows FlattenActionWrapper to handle the flattening and naming later
@@ -254,7 +254,7 @@ class FlattenActionWrapper(gym.ActionWrapper):
     """
     def __init__(self, env):
         super().__init__(env)
-        from mani_skill.utils.gym_utils import batch_space
+        from gymnasium.vector.utils import batch_space
         
         self._action_names = []
         self._leaf_info = [] # List of (key, start, end, original_shape)
@@ -441,15 +441,32 @@ def compute_max_episode_steps(cfg: DictConfig, for_eval: bool = False) -> int:
         return cfg.env.get("max_episode_steps", None)
 
 
-def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: str = None):
-    """Create Track1 environment with proper wrappers."""
+def configure_so101_agent(cfg: DictConfig):
+    """Configure SO101 class attributes from config.
     
-    # Build sim_config dict for ManiSkill (BaseEnv needs this, not Track1Env-specific)
+    Note: Track1Env now uses SO101.create_configured_class() which is more robust,
+    but we keep this for any lingering global property needs.
+    """
+    from scripts.so101 import SO101
+    
+    task = cfg.env.get("task", "lift")
+    SO101.active_mode = "dual" if task == "sort" else "single"
+    
+    if "control" in cfg and "action_bounds" in cfg.control:
+        bounds = OmegaConf.to_container(cfg.control.action_bounds, resolve=True)
+        if task == "sort":
+            SO101.action_bounds_dual_arm = bounds
+        else:
+            SO101.action_bounds_single_arm = bounds
+
+
+def build_sim_config(cfg: DictConfig) -> dict:
+    """Build simulation configuration dictionary for ManiSkill."""
     sim_freq = cfg.env.get("sim_freq", 120)
     control_freq = cfg.env.get("control_freq", 30)
     solver_cfg = cfg.env.get("solver", {})
     
-    sim_config = {
+    return {
         "sim_freq": sim_freq,
         "control_freq": control_freq,
         "scene_config": {
@@ -457,64 +474,61 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
             "solver_velocity_iterations": solver_cfg.get("velocity_iterations", 1),
         }
     }
-    
-    # Configuration is now handled per-environment in Track1Env 
-    # using SO101.create_configured_class to avoid global state issues.
-    
-    # Get device ID for GPU selection
+
+
+def build_env_kwargs(cfg: DictConfig, for_eval: bool, sim_config: dict) -> dict:
+    """Build environment keyword arguments."""
     device_id = cfg.get("device_id", 0)
     sim_backend = f"physx_cuda:{device_id}"
+    
     if for_eval or (cfg.env.get("need_render", False)):
         render_backend = f"sapien_cuda:{device_id}" 
         render_mode = "sensors"
     else:
         render_mode = None
         render_backend = None
-    
-    assert cfg.env.obs_mode == "state_dict", "Only state_dict is supported for now"
-    # Build env_kwargs: BaseEnv params + cfg for Track1Env to parse
-    env_kwargs = dict(
-        # Track1Env extracts its config from cfg
+        
+    kwargs = dict(
         cfg=cfg,
         eval_mode=for_eval,
-        # BaseEnv params
         obs_mode=cfg.env.obs_mode, 
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
         control_mode=cfg.control.control_mode,
         sim_config=sim_config,
-        render_mode=render_mode,
         sim_backend=sim_backend,
-        render_backend=render_backend,
+        render_mode=render_mode,
     )
+    if render_backend is not None:
+        kwargs["render_backend"] = render_backend
+        
+    return kwargs
 
-    # from mani_skill.utils.wrappers import FlattenObservationWrapper
-    # from mani_skill.utils.wrappers import FlattenActionSpaceWrapper
-    # from mani_skill.utils.wrappers import FlattenRGBDObservationWrapper
-    
+
+def create_base_env(cfg: DictConfig, num_envs: int, for_eval: bool, env_kwargs: dict):
+    """Create the base Track1Env instance using gym.make."""
     reconfiguration_freq = 1 if for_eval else None
-    
     max_episode_steps = compute_max_episode_steps(cfg, for_eval)
     
-    env = gym.make(
+    return gym.make(
         cfg.env.env_id,
         num_envs=num_envs,
         reconfiguration_freq=reconfiguration_freq,
         max_episode_steps=max_episode_steps,
         **env_kwargs
     )
-    
-    # Decouple single-arm logic using a wrapper for lift/stack tasks
+
+
+def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_dir: str = None):
+    """Apply wrappers in correct order."""
+    # 1. Single-arm logic (filters actions/obs)
     if cfg.env.task in ["lift", "stack"]:
         env = SingleArmWrapper(env)
     
-    # Flatten Action space and track joint names
+    # 2. Spaces flattening (required for training runner)
     env = FlattenActionWrapper(env)
-
-    # Flatten state_dict observations to tensor (with obs_names tracking)
     env = FlattenStateWrapper(env)
-
-    # Video Recording (only for eval envs with capture_video enabled)
-    # Note: RecordEpisode should be AFTER observation wrappers per ManiSkill docs
+    
+    # 3. Video recording (eval only)
     if for_eval and video_dir and cfg.capture_video:
         env = RecordEpisode(
             env,
@@ -526,13 +540,29 @@ def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: 
             info_on_video=True,
             render_substeps=False,
         )
-
-    # Wrap with ManiSkillVectorEnv (different config for training vs eval)
+    
+    # 4. Vectorization (final layer)
     if for_eval:
-        # Eval: ignore terminations to run full episodes, record metrics for final_info
-        env = ManiSkillVectorEnv(env, num_envs, auto_reset=False,ignore_terminations=True, record_metrics=True)
+        env = ManiSkillVectorEnv(env, num_envs, auto_reset=False, ignore_terminations=True, record_metrics=True)
     else:
-        # Training: auto-reset on terminations (fail/success triggers reset)
-        env = ManiSkillVectorEnv(env, num_envs, auto_reset=True, ignore_terminations=False, record_metrics= True)
+        env = ManiSkillVectorEnv(env, num_envs, auto_reset=True, ignore_terminations=False, record_metrics=True)
+        
+    return env
+
+
+def make_env(cfg: DictConfig, num_envs: int, for_eval: bool = False, video_dir: str = None):
+    """Create Track1 environment with all wrappers."""
+    # 1. Configure Agent properties
+    configure_so101_agent(cfg)
+    
+    # 2. Build configurations
+    sim_config = build_sim_config(cfg)
+    env_kwargs = build_env_kwargs(cfg, for_eval, sim_config)
+    
+    # 3. Create the base environment
+    env = create_base_env(cfg, num_envs, for_eval, env_kwargs)
+    
+    # 4. Apply wrappers (ordering is critical!)
+    env = apply_wrappers(env, cfg, num_envs, for_eval, video_dir)
     
     return env

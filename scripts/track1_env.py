@@ -179,8 +179,8 @@ class Track1Env(BaseEnv):
             task_name=self.task,
             mode="dual" if self.task == "sort" else "single",
             action_bounds=cfg.action_bounds,
-            urdf_path=getattr(cfg.env, 'robot_urdf', None),
-            cfg=cfg # Pass full config to derive gripper physics
+            urdf_path=cfg.robot_urdf,
+            cfg=cfg.raw_cfg # Pass full config to derive gripper physics
         )
         new_uid = ConfiguredSO101.uid
         

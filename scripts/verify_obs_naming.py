@@ -14,9 +14,11 @@ def verify_names():
         "env": {
             "env_id": "Track1-v0",
             "task": "lift",
-            "control_mode": "pd_joint_delta_pos",
             "camera_mode": "direct_pinhole",
-            "obs_mode": "state",
+            "obs_mode": "state_dict", # Must be state_dict for make_env
+        },
+        "control": {
+            "control_mode": "pd_joint_delta_pos",
         },
         "training": {
             "num_envs": 1,

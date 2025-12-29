@@ -93,6 +93,8 @@ class Track1Config:
     undistort_alpha: float = 0.25
     obs: ObsNormalizationConfig = field(default_factory=ObsNormalizationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
+    robot_urdf: Optional[str] = None
+    raw_cfg: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_hydra(cls, cfg: Union[DictConfig, Dict[str, Any]]) -> "Track1Config":
@@ -158,6 +160,9 @@ class Track1Config:
                     "lift": stages.get("lift_target", 0.05),
                 }
 
-            config.reward = RewardConfig(**{k: v for k, v in reward_dict.items() if k in RewardConfig.__dataclass_fields__})
+        config.reward = RewardConfig(**{k: v for k, v in reward_dict.items() if k in RewardConfig.__dataclass_fields__})
+
+        config.robot_urdf = env_cfg.get("robot_urdf", None)
+        config.raw_cfg = cfg_dict
 
         return config
