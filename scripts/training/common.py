@@ -118,38 +118,39 @@ class NormalizeRewardGPU(gym.Wrapper):
 class FlattenStateWrapper(gym.ObservationWrapper):
     """Flattens dict observations into a single vector, with dimension name tracking.
     
-    Uses ManiSkill's flatten_state_dict for consistent ordering with their internal logic.
-    Records obs_names during init for logging purposes.
+    This wrapper discovers the structure of the observation dictionary during initialization
+    and pre-records the paths to each leaf tensor. This ensures that:
+    1. Label order (obs_names) and value order are perfectly aligned.
+    2. Extraction is high-performance and torch.compile-friendly (no recursion in step).
     
     Attributes:
         obs_names: List of descriptive names for each flattened dimension.
     """
+
     
     def __init__(self, env) -> None:
         super().__init__(env)
-        from mani_skill.utils import common as ms_common
         from mani_skill.envs.sapien_env import BaseEnv
         
         # Get base env for accessing raw obs structure
         base_env: BaseEnv = self.env.unwrapped
-        
-        # Get initial raw observation to determine structure and names
-        # _init_raw_obs is set by ManiSkill after first reset
         raw_obs = base_env._init_raw_obs
         
-        # Flatten to get the structure and update observation space
-        flattened = ms_common.flatten_state_dict(raw_obs)
-        base_env.update_obs_space(flattened)
+        # Discover structure and record paths
+        self._leaf_paths = []
+        self._obs_names = []
+        self._discover_structure(raw_obs)
         
-        # Extract dimension names by walking the raw obs dict
-        self._obs_names = self._extract_names(raw_obs)
+        # Calculate total dimension and update space
+        total_dim = len(self._obs_names)
+        base_env.update_obs_space(torch.zeros((base_env.num_envs, total_dim), device=base_env.device))
         
-        # Verify count matches
-        expected_dim = flattened.shape[-1] if hasattr(flattened, 'shape') else len(flattened)
-        if len(self._obs_names) != expected_dim:
-            print(f"Warning: obs_names count ({len(self._obs_names)}) != flattened dim ({expected_dim})")
-            print(f"Falling back to generic naming")
-            self._obs_names = [f"obs_{i}" for i in range(expected_dim)]
+        # Compile the observation method for maximum performance
+        # PyTorch will unroll the path-following loop during compilation
+        if hasattr(torch, "compile"):
+            self.observation = torch.compile(self.observation, mode="reduce-overhead")
+        
+        print(f"[FlattenStateWrapper] Flattened {len(self._leaf_paths)} leaf tensors into {total_dim} dimensions.")
     
     @property
     def base_env(self):
@@ -160,42 +161,57 @@ class FlattenStateWrapper(gym.ObservationWrapper):
         """List of descriptive names for each flattened observation dimension."""
         return self._obs_names
     
-    def _extract_names(self, obs_dict, prefix="") -> list:
-        """Recursively extract names from observation dict structure.
-        
-        Uses same traversal order as ManiSkill's flatten_state_dict (dict key order).
-        """
-        from mani_skill.utils import common as ms_common
-        names = []
-        
-        if isinstance(obs_dict, dict):
-            for key in obs_dict.keys():  # Same order as flatten_state_dict
-                new_prefix = f"{prefix}/{key}" if prefix else key
-                names.extend(self._extract_names(obs_dict[key], new_prefix))
+    def _discover_structure(self, obs, path=()):
+        """Recursively walk the dict to find tensors and record their paths/names."""
+        if isinstance(obs, dict):
+            # Respect dictionary insertion order (consistent with ManiSkill)
+            for key, value in obs.items():
+                self._discover_structure(value, path + (key,))
         else:
-            # Leaf tensor - add one name per element
-            if hasattr(obs_dict, 'shape'):
-                # Handle batched tensors: shape is (B, *dims)
-                # Get the non-batch dimensions
-                if len(obs_dict.shape) > 1:
-                    dim = int(np.prod(obs_dict.shape[1:]))
-                else:
-                    dim = 1
+            # Leaf tensor
+            name_prefix = "/".join(path)
+            
+            # Determine dimensions (B, D...)
+            if hasattr(obs, 'shape'):
+                # In ManiSkill GPU mode, 1st dimension is always num_envs (batch)
+                dim = int(np.prod(obs.shape[1:])) if len(obs.shape) > 1 else 1
             else:
                 dim = 1
             
+            # Record extraction path
+            self._leaf_paths.append(path)
+            
+            # Generate names for each dimension of this leaf
             if dim == 1:
-                names.append(prefix)
+                self._obs_names.append(name_prefix)
             else:
                 for i in range(dim):
-                    names.append(f"{prefix}_{i}")
-        
-        return names
+                    self._obs_names.append(f"{name_prefix}_{i}")
     
-    def observation(self, observation):
-        """Flatten observation dict to tensor using ManiSkill's function."""
-        from mani_skill.utils import common as ms_common
-        return ms_common.flatten_state_dict(observation, use_torch=True)
+    def observation(self, obs):
+        """Perform flattening by following pre-recorded paths.
+        
+        This loop is easily unrolled/optimized by torch.compile.
+        """
+        tensors = []
+        for path in self._leaf_paths:
+            val = obs
+            # Manual traversal is fast and compile-friendly
+            for key in path:
+                val = val[key]
+            
+            # Standardize to (B, D) tensors
+            if val.ndim == 1:
+                # [B] -> [B, 1]
+                val = val[:, None]
+            elif val.ndim > 2:
+                # [B, H, W, ...] -> [B, H*W*...]
+                val = val.flatten(start_dim=1)
+            
+            tensors.append(val)
+        
+        # Final concatenation across features (dim -1)
+        return torch.cat(tensors, dim=-1)
 
 
 def compute_max_episode_steps(cfg: DictConfig, for_eval: bool = False) -> int:
