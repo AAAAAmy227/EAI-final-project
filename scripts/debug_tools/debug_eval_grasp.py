@@ -8,8 +8,8 @@ sys.path.insert(0, "/home/admin/Desktop/eai-final-project")
 import torch
 import gymnasium as gym
 
-from scripts.track1_env import Track1Env
-from scripts.so101 import SO101
+from scripts.envs.track1_env import Track1Env
+from scripts.agents.so101 import SO101
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

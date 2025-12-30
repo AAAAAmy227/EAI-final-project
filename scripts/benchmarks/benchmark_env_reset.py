@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, "/home/admin/Desktop/eai-final-project")
 
 # Register environment
-from scripts.track1_env import Track1Env
+from scripts.envs.track1_env import Track1Env
 
 
 def benchmark_env_creation(num_envs: int, domain_randomization: bool, obs_mode: str = "state"):

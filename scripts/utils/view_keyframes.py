@@ -10,7 +10,7 @@ import argparse
 import gymnasium as gym
 import torch
 import numpy as np
-from scripts.track1_env import Track1Env
+from scripts.envs.track1_env import Track1Env
 
 
 # Define keyframes - sampled valid poses (gripper above table)

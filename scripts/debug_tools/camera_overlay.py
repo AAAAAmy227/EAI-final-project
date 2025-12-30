@@ -12,7 +12,7 @@ from PIL import Image
 import gymnasium as gym
 import argparse
 import cv2
-from scripts.track1_env import Track1Env
+from scripts.envs.track1_env import Track1Env
 
 
 def create_overlay(sim_image: np.ndarray, real_image: np.ndarray, alpha: float = 0.5) -> np.ndarray:

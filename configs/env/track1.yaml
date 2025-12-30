@@ -49,8 +49,8 @@ camera:
 # These values are applied to the cube during environment creation
 cube_physics:
   mass: 0.1                 # 100g (reference uses 0.1)
-  static_friction: 0.5      # High friction for stable grasp (reference uses 5.0)
-  dynamic_friction: 0.5     # Dynamic friction (reference uses 3.0)
+  static_friction: 0.3      # High friction for stable grasp (reference uses 5.0)
+  dynamic_friction: 0.3     # Dynamic friction (reference uses 3.0)
   restitution: 0.0          # No bounce (reference uses 0.0)
 
 # Table Physical Properties
@@ -58,8 +58,8 @@ cube_physics:
 # Note: Actual contact friction = sqrt(cube_friction * table_friction)
 # Example: sqrt(5.0 * 2.0) = 3.16
 table_physics:
-  static_friction: 0.1      # Table static friction
-  dynamic_friction: 0.1     # Table dynamic friction
+  static_friction: 0.3      # Table static friction
+  dynamic_friction: 0.3     # Table dynamic friction
   restitution: 0.0          # No bounce
 
 # Gripper Physical Properties (aligned with reference implementation)

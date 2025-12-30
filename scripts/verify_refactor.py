@@ -2,7 +2,7 @@ import gymnasium as gym
 import torch
 import numpy as np
 import sapien.core as sapien
-from scripts.track1_env import Track1Env
+from scripts.envs.track1_env import Track1Env
 
 def test_env_init():
     print("Testing Track1Env initialization with default config...")

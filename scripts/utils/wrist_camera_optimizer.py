@@ -22,7 +22,7 @@ sys.path.append(os.getcwd())
 
 try:
     import gymnasium as gym
-    from scripts.track1_env import Track1Env
+    from scripts.envs.track1_env import Track1Env
     import torch
     from mani_skill.utils.structs.pose import Pose
 except ImportError:

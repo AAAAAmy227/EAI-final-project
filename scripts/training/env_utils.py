@@ -12,8 +12,8 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 # Import Track1 environment
 try:
-    from scripts.track1_env import Track1Env
-    from scripts.so101 import SO101
+    from scripts.envs.track1_env import Track1Env
+    from scripts.agents.so101 import SO101
 except ImportError as e:
     raise RuntimeError(f"Required modules not found: {e}, Track1 environment not found. Please run `uv run -m scripts.track1_env` to iresolve it.") from e
 
@@ -447,7 +447,7 @@ def configure_so101_agent(cfg: DictConfig):
     Note: Track1Env now uses SO101.create_configured_class() which is more robust,
     but we keep this for any lingering global property needs.
     """
-    from scripts.so101 import SO101
+    from scripts.agents.so101 import SO101
     
     task = cfg.env.get("task", "lift")
     SO101.active_mode = "dual" if task == "sort" else "single"

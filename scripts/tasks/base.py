@@ -3,7 +3,7 @@ import torch
 from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
-    from scripts.track1_env import Track1Env
+    from scripts.envs.track1_env import Track1Env
 
 class BaseTaskHandler(ABC):
     def __init__(self, env: 'Track1Env'):

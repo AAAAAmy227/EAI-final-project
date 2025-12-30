@@ -9,8 +9,8 @@ import torch
 import gymnasium as gym
 from omegaconf import OmegaConf
 
-from scripts.track1_env import Track1Env
-from scripts.so101 import SO101
+from scripts.envs.track1_env import Track1Env
+from scripts.agents.so101 import SO101
 from scripts.training.agent import Agent
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 

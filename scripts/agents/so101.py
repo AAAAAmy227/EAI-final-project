@@ -38,29 +38,7 @@ class SO101(BaseAgent):
         suffix = cls.LEFT_AGENT_SUFFIX if side == "left" else cls.RIGHT_AGENT_SUFFIX
         return f"{cls.uid}{suffix}"
 
-    @classmethod
-    def create_configured_class(cls, mode: str, action_bounds: dict = None, urdf_path: str = None, urdf_config: dict = None):
-        """Create a new class with specific configuration to avoid global state modification."""
-        import uuid
-        new_uid = f"{cls.uid}-{uuid.uuid4().hex[:6]}"
-        
-        class ConfiguredSO101(cls):
-            uid = new_uid
-            active_mode = mode
-            if action_bounds:
-                if mode == "dual":
-                    action_bounds_dual_arm = action_bounds
-                else:
-                    action_bounds_single_arm = action_bounds
-            if urdf_path:
-                ConfiguredSO101.urdf_path = urdf_path
-            if urdf_config:
-                ConfiguredSO101.urdf_config = urdf_config
-        
-        # Register the new class so ManiSkill can find it by its new UID
-        register_agent(new_uid)(ConfiguredSO101)
-        return ConfiguredSO101
-    
+
     # Per-joint action bounds (radians) - can be overridden before environment creation
     # Default values based on trajectory analysis (99th percentile + buffer)
     # Keys must match joint names: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
@@ -120,12 +98,7 @@ class SO101(BaseAgent):
             )
         return urdf_config
 
-    @classmethod
-    def configure_from_cfg(cls, cfg):
-        """Configure SO101 class attributes from Hydra config (Deprecated: modifies global state)."""
-        if hasattr(cfg, "env") and "robot_urdf" in cfg.env:
-            cls.urdf_path = cfg.env.robot_urdf
-        cls.urdf_config = cls.derive_urdf_config(cfg)
+
 
     @classmethod
     def create_configured_class(cls, task_name: str, mode: str, action_bounds: dict = None, urdf_path: str = None, cfg: any = None):

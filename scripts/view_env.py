@@ -11,7 +11,7 @@ Usage:
 
 import argparse
 import gymnasium as gym
-from scripts.track1_env import Track1Env
+from scripts.envs.track1_env import Track1Env
 
 
 def main():

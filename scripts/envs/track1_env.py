@@ -1,8 +1,8 @@
+from typing import Optional
 import numpy as np
 import sapien
 import sapien.render
 import torch
-import torch.nn.functional as tFunc
 import gymnasium as gym
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.envs.utils import randomization
@@ -11,11 +11,11 @@ from mani_skill.utils.registration import register_env
 from mani_skill.sensors.camera import CameraConfig
 from mani_skill.utils.structs.pose import Pose
 from mani_skill.utils.structs import Actor
-from sapien.physx import PhysxRigidBodyComponent
-from sapien.render import RenderBodyComponent
-from scripts.so101 import SO101
+
+from scripts.agents.so101 import SO101
 from scripts.training.config_utils import Track1Config
-import mani_skill.envs.utils.randomization as randomization
+from scripts.envs import scene_builder
+from scripts.envs import camera_processing
 
 
 
@@ -211,23 +211,6 @@ class Track1Env(BaseEnv):
         else:
             raise ValueError(f"Unknown task: {task}")
 
-    def get_obs_structure(self):
-        """The unbatched, hierarchical observation space for descriptive logging.
-        
-        Dynamically derived from the actual observation dictionary to ensure parity.
-        """
-        from mani_skill.utils import gym_utils
-        from mani_skill.utils import common as ms_common
-        
-        # Call _get_obs_state_dict directly to get the hierarchical dictionary.
-        # super().get_obs() would return a flattened tensor in state mode.
-        obs_dict = self._get_obs_state_dict({})
-        
-        # Convert to gym space (unbatched)
-        obs_numpy = ms_common.to_numpy(obs_dict)
-        return gym_utils.convert_observation_to_space(obs_numpy, unbatched=True)
-        
-
 
     def _setup_device(self):
         # self.device is guaranteed by BaseEnv
@@ -237,177 +220,18 @@ class Track1Env(BaseEnv):
             self.undistortion_grid = self.undistortion_grid.to(self.device)
 
     def _setup_camera_processing_maps(self):
-        """Precompute torch grids for camera distortion/undistortion processing via tFunc.grid_sample.
+        """Precompute torch grids for camera distortion/undistortion processing.
         
-        Pipeline:
-        - Source: Rendered at (640×scale) × (480×scale) with scaled intrinsic matrix
-        - Distortion: Maps source -> 640×480 distorted output
-        - Undistortion (alpha=0): Maps 640×480 distorted -> 640×480 clean pinhole
+        Delegates to camera_processing module.
         """
-        import cv2
-        
-        # Camera intrinsic parameters (from real camera calibration)
-        self.mtx_intrinsic = np.array([
-            [570.21740069, 0., 327.45975405],
-            [0., 570.1797441, 260.83642155],
-            [0., 0., 1.]
-        ], dtype=np.float64)
-        
-        self.dist_coeffs = np.array([
-            -0.735413911, 0.949258417, 0.000189059234, -0.00200351391, -0.864150312
-        ], dtype=np.float64)
-        
-        # Scale factor for high-res rendering
-        
-        # Source image size (high-res pinhole render)
-        OUT_W, OUT_H = 640, 480
-        SRC_W = OUT_W * self.render_scale
-        SRC_H = OUT_H * self.render_scale
-        if self.camera_mode in ["distorted", "distort-twice"]:
-            self.front_render_width = SRC_W
-            self.front_render_height = SRC_H
-
-            # Get the undistorted intrinsic matrix using getOptimalNewCameraMatrix with alpha=1
-            # This gives us the intrinsic for a pinhole camera that covers all distorted pixels
-            new_mtx_alpha1, _ = cv2.getOptimalNewCameraMatrix(
-                self.mtx_intrinsic, self.dist_coeffs, (OUT_W, OUT_H), 1.0, (SRC_W, SRC_H)
-            )
-            
-            # Scale the new_mtx to render resolution
-            self.render_intrinsic = new_mtx_alpha1.copy()
-            
-            # ============ Distortion Grid (SRC -> OUT distorted) ============
-            # For each pixel in the 640×480 distorted output, find where it maps to in the source
-            
-            # Step 1: Generate grid for distorted output image (640×480)
-            xs = np.arange(OUT_W)
-            ys = np.arange(OUT_H)
-            xx, yy = np.meshgrid(xs, ys)
-            points = np.stack([xx.ravel(), yy.ravel()], axis=-1).astype(np.float32).reshape(-1, 1, 2)
-            
-            # Step 2: undistortPoints with P=scaled_intrinsic gives coordinates in render space directly
-            undistorted_pts = cv2.undistortPoints(
-                points, 
-                cameraMatrix=self.mtx_intrinsic, 
-                distCoeffs=self.dist_coeffs, 
-                R=None, 
-                P=self.render_intrinsic  # Project to render camera space
-            )
-            map_xy_render = undistorted_pts.reshape(OUT_H, OUT_W, 2)
-            
-            # Step 3: Normalize to [-1, 1] for grid_sample
-            grid_x = 2.0 * map_xy_render[:, :, 0] / (SRC_W - 1) - 1.0
-            grid_y = 2.0 * map_xy_render[:, :, 1] / (SRC_H - 1) - 1.0
-            distortion_grid = np.stack((grid_x, grid_y), axis=2).astype(np.float32)
-            self.distortion_grid = torch.from_numpy(distortion_grid)# .to(device=self.device)  # (OUT_H, OUT_W, 2)
-            
-            # ============ Undistortion Grid ============
-            # This maps 640x480 distorted -> 640x480 clean pinhole
-        if self.camera_mode in ["distort-twice", "direct_pinhole"]:
-            # Get new camera matrix with configurable alpha
-            # alpha=0: crop black borders, alpha=1: keep all pixels (shrinks image)
-            # alpha=0.25 is optimal for full work area visibility
-            alpha = getattr(self, 'undistort_alpha', 0.25)
-            new_mtx_undist, _ = cv2.getOptimalNewCameraMatrix(
-                self.mtx_intrinsic, self.dist_coeffs, (OUT_W, OUT_H), alpha, (OUT_W, OUT_H)
-            )
-            
-            if self.camera_mode == "direct_pinhole":
-                self.front_render_width = OUT_W
-                self.front_render_height = OUT_H
-                self.render_intrinsic = new_mtx_undist.copy()
-                return
-            # initUndistortRectifyMap gives us the mapping from undistorted -> distorted source
-            # We need the inverse for grid_sample
-            map1, map2 = cv2.initUndistortRectifyMap(
-                self.mtx_intrinsic, self.dist_coeffs, None, new_mtx_undist, (OUT_W, OUT_H), cv2.CV_32FC1
-            )
-            
-            # map1, map2 are (OUT_H, OUT_W) containing x, y source coordinates
-            # Normalize to [-1, 1]
-            undist_grid_x = 2.0 * map1 / (OUT_W - 1) - 1.0
-            undist_grid_y = 2.0 * map2 / (OUT_H - 1) - 1.0
-            undistortion_grid = np.stack((undist_grid_x, undist_grid_y), axis=2).astype(np.float32)
-            self.undistortion_grid = torch.from_numpy(undistortion_grid).to(device=self.device)  # (OUT_H, OUT_W, 2)
+        camera_processing.setup_camera_processing_maps(self)
 
     def _apply_camera_processing(self, obs):
         """Apply camera processing based on camera_mode.
         
-        Modes:
-        - direct_pinhole: No processing (already rendered with correct params)
-        - distorted: Apply distortion to 1920x1440 source -> 640x480 distorted output
-        - distort-twice: distorted -> then undistort (alpha=0) -> 640x480 clean
+        Delegates to camera_processing module.
         """
-        
-        if self.camera_mode == "direct_pinhole":
-            return obs  # No processing needed
-        
-        # Skip if grids not yet initialized (happens during parent __init__ reset)
-        if self.distortion_grid is None:
-            return obs
-        
-        # Find the RGB tensor - could be in 'sensor_data' or 'image'
-        rgb_tensor = None
-        obs_key = None
-        
-        if isinstance(obs, dict):
-            if "sensor_data" in obs and "front_camera" in obs["sensor_data"]:
-                if "rgb" in obs["sensor_data"]["front_camera"]:
-                    rgb_tensor = obs["sensor_data"]["front_camera"]["rgb"]
-                    obs_key = "sensor_data"
-            elif "image" in obs and "front_camera" in obs["image"]:
-                if "rgb" in obs["image"]["front_camera"]:
-                    rgb_tensor = obs["image"]["front_camera"]["rgb"]
-                    obs_key = "image"
-        
-        if rgb_tensor is None or not isinstance(rgb_tensor, torch.Tensor):
-            return obs
-
-        # Input: (B, SRC_H, SRC_W, C) or (SRC_H, SRC_W, C)
-        # For distorted/distort-twice: Source is 1920x1440
-        is_batch = len(rgb_tensor.shape) == 4
-        if not is_batch:
-            img_in = rgb_tensor.unsqueeze(0)
-        else:
-            img_in = rgb_tensor
-
-        B = img_in.shape[0]
-        original_dtype = rgb_tensor.dtype
-        
-        # Permute to (B, C, H, W) for grid_sample
-        img_in = img_in.permute(0, 3, 1, 2).float()
-        
-        # Ensure grids are on same device as input
-        device = img_in.device
-        dist_grid = self.distortion_grid.to(device).unsqueeze(0).expand(B, -1, -1, -1)
-        
-        # Step 1: Apply distortion (1920x1440 -> 640x480)
-        distorted = tFunc.grid_sample(img_in, dist_grid, mode='bilinear', padding_mode='border', align_corners=True)
-        
-        if self.camera_mode == "distorted":
-            result = distorted
-        elif self.camera_mode == "distort-twice":
-            # Step 2: Apply undistortion (640x480 distorted -> 640x480 clean)
-            undist_grid = self.undistortion_grid.to(device).unsqueeze(0).expand(B, -1, -1, -1)
-            result = tFunc.grid_sample(distorted, undist_grid, mode='bilinear', padding_mode='zeros', align_corners=True)
-        else:
-            result = distorted  # Fallback
-        
-        # Permute back to (B, H, W, C)
-        result = result.permute(0, 2, 3, 1)
-        
-        # Restore dtype
-        if original_dtype == torch.uint8:
-            result = result.clamp(0, 255).to(torch.uint8)
-        else:
-            result = result.to(original_dtype)
-            
-        if not is_batch:
-            obs[obs_key]["front_camera"]["rgb"] = result.squeeze(0)
-        else:
-            obs[obs_key]["front_camera"]["rgb"] = result
-
-        return obs
+        return camera_processing.apply_camera_processing(self, obs)
 
     @property
     def _default_sensor_configs(self):
@@ -556,59 +380,6 @@ class Track1Env(BaseEnv):
             obs = self._apply_camera_processing(obs)
         return obs, reward, terminated, truncated, info
 
-    def _get_obs_state_dict(self, info: dict):
-        """Override to filter left arm obs and apply normalization."""
-        obs = super()._get_obs_state_dict(info)
-        
-        # Apply agent state normalization
-        if self.obs_normalize_enabled and "agent" in obs:
-            qvel_clip = torch.tensor(self.qvel_clip, device=self.device)
-            
-            for agent_key in obs["agent"]:
-                agent_obs = obs["agent"][agent_key]
-                
-                # Get raw qpos for potential relative calculation
-                raw_qpos = agent_obs.get("qpos", None)
-                
-                # qpos: divide by π → approximately [-1, 1] for typical joint ranges
-                if raw_qpos is not None:
-                    agent_obs["qpos"] = raw_qpos / self.qpos_scale
-                
-                # target_qpos handling based on include_target_qpos setting
-                if "controller" in agent_obs and "target_qpos" in agent_obs["controller"]:
-                    target_qpos = agent_obs["controller"]["target_qpos"]
-                    
-                    if self.include_target_qpos == "relative" and raw_qpos is not None:
-                        # Replace with tracking error: (target_qpos - qpos) / action_bounds
-                        tracking_error = target_qpos - raw_qpos
-                        
-                        # Normalize by action bounds if available, otherwise fall back to qpos_scale
-                        if self.obs_action_bounds is not None:
-                            # Dynamically get joint order from robot to avoid scrambling
-                            active_joints = self.right_arm.robot.get_active_joints()
-                            joint_names = [j.name for j in active_joints]
-                            bounds_list = [self.obs_action_bounds.get(j, 0.1) for j in joint_names]
-                            bounds = torch.tensor(bounds_list, device=self.device)
-                            agent_obs["controller"]["target_qpos"] = tracking_error / bounds
-                        else:
-                            agent_obs["controller"]["target_qpos"] = tracking_error / self.qpos_scale
-                    elif self.include_target_qpos:
-                        # Include normalized target_qpos
-                        agent_obs["controller"]["target_qpos"] = target_qpos / self.qpos_scale
-                    else:
-                        # Exclude target_qpos entirely
-                        del agent_obs["controller"]["target_qpos"]
-                        # Remove empty controller dict
-                        if not agent_obs["controller"]:
-                            del agent_obs["controller"]
-                
-                # qvel: clip and normalize
-                if "qvel" in agent_obs:
-                    qvel = agent_obs["qvel"]
-                    qvel_clipped = torch.clamp(qvel, -qvel_clip, qvel_clip)
-                    agent_obs["qvel"] = qvel_clipped / qvel_clip
-        
-        return obs
 
     def _get_obs_extra(self, info: dict):
         """Return extra observations (state-based).
@@ -762,293 +533,28 @@ class Track1Env(BaseEnv):
 
     def _build_debug_markers(self):
         """Build debug markers for coordinate system visualization.
-        Red at (0,0), Green at (1,0), Blue at (0,1).
+        Delegates to scene_builder module.
         """
-        marker_height = 0.005 # Slightly above table/ground
-        radius = 0.02
-        
-        markers = [
-            {"pos": [0, 0, marker_height], "color": [1, 0, 0], "name": "debug_origin_red"},
-            {"pos": [1, 0, marker_height], "color": [0, 1, 0], "name": "debug_x1_green"},
-            {"pos": [0, 1, marker_height], "color": [0, 0, 1], "name": "debug_y1_blue"},
-        ]
-        
-        for marker in markers:
-            builder = self.scene.create_actor_builder()
-            builder.add_sphere_visual(radius=radius, material=marker["color"])
-            builder.initial_pose = sapien.Pose(p=marker["pos"])
-            builder.build_static(name=marker["name"])
+        scene_builder.build_debug_markers(self)
 
     def _build_table(self):
-        """Build table with optional visual randomization."""
-        if self.domain_randomization:
-            tables = []
-            for i in range(self.num_envs):
-                builder = self.scene.create_actor_builder()
-                # Randomize table color slightly
-                color = [0.9 + np.random.uniform(-0.05, 0.05)] * 3 + [1]
-                builder.add_box_visual(
-                    half_size=[0.3, 0.3, 0.01], 
-                    material=sapien.render.RenderMaterial(base_color=color)
-                )
-                # Use friction material from config for table surface
-                table_material = sapien.physx.PhysxMaterial(
-                    static_friction=self.table_physics["static_friction"],
-                    dynamic_friction=self.table_physics["dynamic_friction"],
-                    restitution=self.table_physics["restitution"]
-                )
-                builder.add_box_collision(
-                    half_size=[0.3, 0.3, 0.01],
-                    material=table_material
-                )
-                builder.initial_pose = sapien.Pose(p=[0.3, 0.3, -0.01])
-                builder.set_scene_idxs([i])
-                table = builder.build_static(name=f"table_{i}")
-                self.scene.remove_from_state_dict_registry(table)
-                tables.append(table)
-            self.table = Actor.merge(tables, name="table")
-            self.scene.add_to_state_dict_registry(self.table)
-        else:
-            builder = self.scene.create_actor_builder()
-            # Use friction material from config for table surface
-            table_material = sapien.physx.PhysxMaterial(
-                static_friction=self.table_physics["static_friction"],
-                dynamic_friction=self.table_physics["dynamic_friction"],
-                restitution=self.table_physics["restitution"]
-            )
-            builder.add_box_visual(half_size=[0.3, 0.3, 0.01], material=[0.9, 0.9, 0.9])
-            builder.add_box_collision(
-                half_size=[0.3, 0.3, 0.01],
-                material=table_material
-            )
-            builder.initial_pose = sapien.Pose(p=[0.3, 0.3, -0.01])
-            self.table = builder.build_static(name="table")
+        """Build table with optional visual randomization.
+        Delegates to scene_builder module.
+        """
+        scene_builder.build_table(self)
 
     def _compute_grids(self):
-        """Compute grid coordinates and boundaries with optional randomization."""
-        tape_half_width = 0.009
-        
-        # Base values (Human specified)
-        x_1 = 0.204
-        x_4 = 0.6
-        y_1 = 0.15
-        upper_height = 0.164
-        
-        # Add randomization if enabled
-        # if self.domain_randomization:
-        #     noise_scale = 0.005 # +/- 5mm
-        #     x_1 += np.random.uniform(-noise_scale, noise_scale)
-        #     # x_4 (table width) usually fixed or small noise
-        #     x_4 += np.random.uniform(-0.002, 0.002) 
-        #     y_1 += np.random.uniform(-noise_scale, noise_scale)
-        #     upper_height += np.random.uniform(-0.002, 0.002)
-        
-        # NOTE: User requested independent tape randomization. 
-        # We keep the logical grid bounds deterministic (or globally fixed for this episode)
-        # so success criteria are consistent, but the Visual Tape will be noisy.
-            
-        # Calculate derived coordinates
-        x = [0.0] * 5
-        x[1] = x_1
-        x[0] = x[1] - 0.166 - 2 * tape_half_width
-        x[4] = x_4
-        x[2] = x[4] - 0.204 - 2 * tape_half_width
-        x[3] = x[4] - 0.204 + 0.166
-        
-        y = [0.0] * 3
-        y[0] = 0.0
-        y[1] = y_1
-        y[2] = y_1 + upper_height + 2 * tape_half_width
-        
-        # Store for _build_tape_lines
-        self.grid_points = {"x": x, "y": y, "tape_half_width": tape_half_width}
-        
-        # Calculate logical boundaries for success/placement (Inner areas excluding tape)
-        # Left Grid: between col1(x[0]) and col2(x[1]) ?? 
-        # Wait, let's map the user's tape logic to logical areas.
-        
-        # Tape logic from user:
-        # row1: y[1] to y[1]+2w (Separates Bottom and Upper?) No, row1 is y[1]. 
-        # row2: y[2] to ...
-        
-        # Based on user code:
-        # Row 1 pos y: y[1] + w.  Size y: w. -> Tape is from y[1] to y[1]+2w.
-        # Row 2 pos y: y[2] + w.  Size y: w. -> Tape is from y[2] to y[2]+2w.
-        
-        # Col 1 pos x: x[0] + w.  Size x: w. -> Tape is from x[0] to x[0]+2w.
-        # Col 2 pos x: x[1] + w.  Size x: w. -> Tape is from x[1] to x[1]+2w.
-        
-        # So the grid "Left" is likely between Col 1 and Col 2, and Row 1 and Row 2.
-        # Left Grid Bounds:
-        # X: (x[0] + 2w) to x[1]
-        # Y: (y[1] + 2w) to y[2] 
-        
-        w = tape_half_width
-        
-        self.grid_bounds["left"] = {
-            "x_min": x[0] + 2*w, "x_max": x[1],
-            "y_min": y[1] + 2*w, "y_max": y[2]
-        }
-        
-        self.grid_bounds["mid"] = {
-            "x_min": x[1] + 2*w, "x_max": x[2], # Wait, is there a tape between Left and Mid?
-            # User code: col1, col4, col2, col3, col5.
-            # col1 @ x[0], col2 @ x[1], col3 @ x[2], col4 @ x[3], col5 @ x[4]?
-            # Let's re-read user code logic carefully.
-            # col1: x[0]. col2: x[1]. col3: x[2]. col4: x[3]. col5: x[4]... 
-            # col4 pos: x[3]+w. 
-            
-            # Left Grid is between x[0] and x[1].
-            # Mid Grid is between x[1] and x[2]? Or x[1] and x[2] are edges?
-            # x[2] = x[4] - 0.204 - 2w.
-            # x[3] = x[4] - 0.204 + 0.166.
-            
-            # It seems:
-            # Left: x[0]...x[1]
-            # Gap?
-            # Mid: x[1]...x[2] ?? No, x[1]=0.204. x[2] ~ 0.6-0.2-small = 0.38.
-            # Right: x[3]...x[4]? x[3] ~ 0.56. x[4]=0.6. width ~4cm? No.
-            
-            # Let's trust the areas defined by the columns.
-            # Left Grid: Inside col1 and col2.
-            "y_min": y[1] + 2*w, "y_max": y[2]
-        }
-        
-        # Re-evaluating Mid/Right based on user's manual "draw correctly" code
-        # User X array: x[0], x[1], x[2], x[3], x[4]
-        # col1 at x[0]
-        # col2 at x[1]
-        # col3 at x[2]
-        # col4 at x[3]
-        # col5 at x[4]
-        
-        # Left Grid: between col1 and col2.
-        # Mid Grid: between col2 and col3.
-        self.grid_bounds["mid"] = {
-            "x_min": x[1] + 2*w, "x_max": x[2],
-            "y_min": y[1] + 2*w, "y_max": y[2]
-        }
-        
-        # Right Grid: between col3 and col4 ? 
-        # OR col3 and col5?
-        # x[3] = x[4] - 0.204 + 0.166.  = 0.562.  x[4]=0.6. Diff = 0.038. Too small for Right grid.
-        # x[2] = x[4] - 0.204 - 2w = 0.378.
-        # Gap between x[2] and x[3] = 0.562 - 0.378 = 0.184. This looks like the Right Grid!
-        
-        # So Right Grid is between col3(x[2]) and col4(x[3]).
-        self.grid_bounds["right"] = {
-            "x_min": x[2] + 2*w, "x_max": x[3],
-            "y_min": y[1] + 2*w, "y_max": y[2]
-        }
-        
-        # Bottom Grid (between robot bases)
-        # Usually below Mid.
-        # User code: col2 and col3 extend down to y[0]?
-        # col2 pos y: (y[2]+y[0])/2. Height: (y[2]-y[0])/2. -> Spans y[0] to y[2].
-        # col3 pos y: (y[2]+y[0])/2. -> Spans y[0] to y[2].
-        # So col2 and col3 go all the way down.
-        # Thus Bottom Grid is between col2 and col3, and between row? (no bottom row tape?)
-        # row1 is at y[1].
-        # So Bottom Grid is y[0] to y[1].
-        self.grid_bounds["bottom"] = {
-            "x_min": x[1] + 2*w, "x_max": x[2],
-            "y_min": y[0], "y_max": y[1]
-        }
+        """Compute grid coordinates and boundaries.
+        Delegates to scene_builder module.
+        """
+        scene_builder.compute_grids(self)
 
 
     def _build_tape_lines(self):
-        """Build black tape lines using computed grid points."""
-        tape_material = [0, 0, 0]
-        tape_height = 0.001
-        
-        # Retrieve computed params
-        x = self.grid_points["x"]
-        y = self.grid_points["y"]
-        tape_half_width = self.grid_points["tape_half_width"]
-        
-        tape_specs = []
-
-        tape_specs.append({
-            "half_size": [(x[3]- x[0]) / 2 + tape_half_width, tape_half_width, tape_height],
-            "pos": [(x[3] +  x[0]) / 2 + tape_half_width, y[1] + tape_half_width, 0.001],
-            "name": "row1"
-        })
-
-        tape_specs.append({
-            "half_size": [(x[3]- x[0]) / 2 + tape_half_width, tape_half_width, tape_height],
-            "pos": [(x[3] +  x[0]) / 2 + tape_half_width, y[2] + tape_half_width, 0.001],
-            "name": "row2"
-        })
-
-
-        tape_specs.append({
-            "half_size": [tape_half_width, (y[2] - y[1])/2 + tape_half_width , tape_height],
-            "pos": [x[0] + tape_half_width, (y[2] + y[1])/2 + tape_half_width, 0.001],
-            "name": "col1"
-        })
-
-        tape_specs.append({
-            "half_size": [tape_half_width, (y[2] - y[1])/2 + tape_half_width , tape_height],
-            "pos": [x[3] + tape_half_width, (y[2] + y[1])/2 + tape_half_width, 0.001],
-            "name": "col4"
-        })
-
-        tape_specs.append({
-            "half_size": [tape_half_width, (y[2] - y[0])/2 + tape_half_width , tape_height],
-            "pos": [x[1] + tape_half_width, (y[2] + y[0])/2 + tape_half_width, 0.001],
-            "name": "col2"
-        })
-        
-        tape_specs.append({
-            "half_size": [tape_half_width, (y[2] - y[0])/2 + tape_half_width , tape_height],
-            "pos": [x[2] + tape_half_width, (y[2] + y[0])/2 + tape_half_width, 0.001],
-            "name": "col3"
-        })
-
-        tape_specs.append({
-            "half_size": [tape_half_width, 0.6 / 2 , tape_height],
-            "pos": [x[4] + tape_half_width, 0.6 / 2, 0.001],
-            "name": "col5"
-        })
-        
-        # Build all tape lines
-        for spec in tape_specs:
-            builder = self.scene.create_actor_builder()
-            
-            # Apply independent randomization if enabled
-            pos = list(spec["pos"])
-            half_size = list(spec["half_size"])
-            rotation = [1, 0, 0, 0] # Identity quaternion
-            
-            if self.domain_randomization:
-                # 1. Position Noise (x, y)
-                pos_noise = np.random.uniform(-0.005, 0.005, size=2) # +/- 5mm
-                pos[0] += pos_noise[0]
-                pos[1] += pos_noise[1]
-                
-                # 2. Size Noise (length aka half_size[0] mostly, or width)
-                size_noise = np.random.uniform(-0.002, 0.002) # +/- 2mm
-                # Don't change thickness (z), maybe slight width/length change
-                half_size[0] += size_noise 
-                
-                # 3. Rotation Noise (Yaw)
-                # Small rotation around Z axis
-                yaw_noise = np.deg2rad(np.random.uniform(-2, 2)) # +/- 2 degrees
-                import transforms3d
-                rotation = transforms3d.quaternions.axangle2quat([0, 0, 1], yaw_noise)
-                # Transforms3d returns [w, x, y, z], Sapien expects [w, x, y, z] match? 
-                # Sapien Pose takes q=[w, x, y, z] or [x, y, z, w]?
-                # Sapien uses [w, x, y, z] usually. Let's verify or use Sapien's Rotation.
-                # Actually sapien.Pose q is [w, x, y, z].
-                # Let's use simple randomization without external lib if possible or check imports.
-                # simpler:
-                q_z = np.sin(yaw_noise / 2)
-                q_w = np.cos(yaw_noise / 2)
-                rotation = [q_w, 0, 0, q_z]
-
-            builder.add_box_visual(half_size=half_size, material=tape_material)
-            builder.initial_pose = sapien.Pose(p=pos, q=rotation)
-            builder.build_static(name=spec["name"])
+        """Build black tape lines using computed grid points.
+        Delegates to scene_builder module.
+        """
+        scene_builder.build_tape_lines(self)
 
 
 
@@ -1141,73 +647,16 @@ class Track1Env(BaseEnv):
             )
 
     def _build_cube(self, name: str, half_size: float, base_color: list, default_pos: list) -> Actor:
-        """Build a cube with optional domain randomization."""
-        if self.domain_randomization:
-            cubes = []
-            for i in range(self.num_envs):
-                builder = self.scene.create_actor_builder()
-                
-                # Randomize color slightly
-                color = [
-                    base_color[0] + np.random.uniform(-0.1, 0.1),
-                    base_color[1] + np.random.uniform(-0.1, 0.1),
-                    base_color[2] + np.random.uniform(-0.1, 0.1),
-                    1
-                ]
-                color = [max(0, min(1, c)) for c in color]
-                
-                builder.add_box_collision(half_size=[half_size] * 3)
-                builder.add_box_visual(
-                    half_size=[half_size] * 3,
-                    material=sapien.render.RenderMaterial(base_color=color)
-                )
-                builder.initial_pose = sapien.Pose(p=default_pos)
-                builder.set_scene_idxs([i])
-                cube = builder.build(name=f"{name}_{i}")
-                self.scene.remove_from_state_dict_registry(cube)
-                cubes.append(cube)
-            
-            merged = Actor.merge(cubes, name=name)
-            self.scene.add_to_state_dict_registry(merged)
-            
-            # Apply physical properties
-            self._apply_cube_physics(merged)
-            return merged
-        else:
-            builder = self.scene.create_actor_builder()
-            builder.add_box_collision(half_size=[half_size] * 3)
-            builder.add_box_visual(half_size=[half_size] * 3, material=base_color[:3])
-            builder.initial_pose = sapien.Pose(p=default_pos)
-            cube = builder.build(name=name)
-            
-            # Apply physical properties even in non-randomized mode
-            self._apply_cube_physics(cube)
-            return cube
+        """Build a cube with optional domain randomization.
+        Delegates to scene_builder module.
+        """
+        return scene_builder.build_cube(self, name, half_size, base_color, default_pos)
 
     def _apply_cube_physics(self, cube: Actor):
-        """Apply physics properties to cube (optionally randomized)."""
-        p = self.cube_physics
-        for i, obj in enumerate(cube._objs):
-            rigid_body: PhysxRigidBodyComponent = obj.find_component_by_type(PhysxRigidBodyComponent)
-            if rigid_body is not None:
-                # Apply mass
-                if self.domain_randomization:
-                    # Randomize mass around config value (+/- 50%)
-                    rigid_body.mass = p["mass"] * np.random.uniform(0.5, 1.5)
-                else:
-                    rigid_body.mass = p["mass"]
-                
-                # Apply friction and restitution
-                for shape in rigid_body.collision_shapes:
-                    if self.domain_randomization:
-                        # Randomize friction around config values (+/- 30%)
-                        shape.physical_material.static_friction = p["static_friction"] * np.random.uniform(0.7, 1.3)
-                        shape.physical_material.dynamic_friction = p["dynamic_friction"] * np.random.uniform(0.7, 1.3)
-                    else:
-                        shape.physical_material.static_friction = p["static_friction"]
-                        shape.physical_material.dynamic_friction = p["dynamic_friction"]
-                    
-                    shape.physical_material.restitution = p.get("restitution", 0.0)
+        """Apply physics properties to cube.
+        Delegates to scene_builder module.
+        """
+        scene_builder.apply_cube_physics(self, cube)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         """Initialize episode with randomized object positions and robot poses."""

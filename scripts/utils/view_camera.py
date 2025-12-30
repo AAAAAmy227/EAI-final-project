@@ -14,7 +14,7 @@ import argparse
 import gymnasium as gym
 import cv2
 import numpy as np
-from scripts.track1_env import Track1Env
+from scripts.envs.track1_env import Track1Env
 
 
 def main():
