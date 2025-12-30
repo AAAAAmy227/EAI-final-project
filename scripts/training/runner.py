@@ -378,14 +378,9 @@ class PPORunner:
             self.episode_returns += raw_reward
             
             # Record reward components using info_utils
-            from scripts.training.info_utils import get_reward_components, get_info_field, extract_scalar
+            from scripts.training.info_utils import get_reward_components, get_info_field, accumulate_reward_components
             reward_comps = get_reward_components(infos)
-            if reward_comps is not None:
-                for k, v in reward_comps.items():
-                    val = extract_scalar(v)
-                    if val is not None:
-                        self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + val
-            self.reward_component_count += 1
+            self.reward_component_count += accumulate_reward_components(self.reward_component_sum, reward_comps)
 
             # Success/Fail counts using info_utils
             s_val = get_info_field(infos, "success_count")
@@ -733,46 +728,42 @@ class PPORunner:
             # Use info_utils for cleaner extraction
             from scripts.training.info_utils import (
                 get_reward_components, get_reward_components_per_env, 
-                get_info_field, extract_scalar, extract_bool
+                get_info_field, extract_scalar, extract_bool,
+                accumulate_reward_components
             )
             
             reward_comps = get_reward_components(eval_infos)
-            if reward_comps is not None:
-                for k, v in reward_comps.items():
-                    val = extract_scalar(v)
-                    if val is not None:
-                        eval_reward_components[k] = eval_reward_components.get(k, 0) + val
-                eval_component_count += 1
+            eval_component_count += accumulate_reward_components(eval_reward_components, reward_comps)
+            
+            # Collect per-step data for CSV export (if enabled)
+            rec_cfg = self.cfg.get("recording", {})
+            if rec_cfg.get("save_step_csv", True):
+                reward_comps_per_env = get_reward_components_per_env(eval_infos)
                 
-                # Collect per-step data for CSV export (if enabled)
-                rec_cfg = self.cfg.get("recording", {})
-                if rec_cfg.get("save_step_csv", True):
-                    reward_comps_per_env = get_reward_components_per_env(eval_infos)
+                for env_idx in range(self.cfg.training.num_eval_envs):
+                    step_data = {
+                        "step": step,
+                        "reward": reward[env_idx].item(),
+                    }
                     
-                    for env_idx in range(self.cfg.training.num_eval_envs):
-                        step_data = {
-                            "step": step,
-                            "reward": reward[env_idx].item(),
-                        }
-                        
-                        # Add reward components (prefer per-env values)
-                        if reward_comps_per_env is not None:
-                            for k, v in reward_comps_per_env.items():
-                                val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
-                                step_data[k] = val if val is not None else 0.0
-                        else:
-                            for k, v in reward_comps.items():
-                                val = extract_scalar(v)
-                                step_data[k] = val if val is not None else 0.0
-                        
-                        # Add success/fail status using info_utils
-                        success_val = get_info_field(eval_infos, "success")
-                        step_data["success"] = extract_bool(success_val, env_idx) if success_val is not None else False
-                        
-                        fail_val = get_info_field(eval_infos, "fail")
-                        step_data["fail"] = extract_bool(fail_val, env_idx) if fail_val is not None else False
-                        
-                        step_reward_data[env_idx].append(step_data)
+                    # Add reward components (prefer per-env values)
+                    if reward_comps_per_env is not None:
+                        for k, v in reward_comps_per_env.items():
+                            val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
+                            step_data[k] = val if val is not None else 0.0
+                    else:
+                        for k, v in reward_comps.items():
+                            val = extract_scalar(v)
+                            step_data[k] = val if val is not None else 0.0
+                    
+                    # Add success/fail status using info_utils
+                    success_val = get_info_field(eval_infos, "success")
+                    step_data["success"] = extract_bool(success_val, env_idx) if success_val is not None else False
+                    
+                    fail_val = get_info_field(eval_infos, "fail")
+                    step_data["fail"] = extract_bool(fail_val, env_idx) if fail_val is not None else False
+                    
+                    step_reward_data[env_idx].append(step_data)
             
             # Check for episode completion
             done = terminated | truncated

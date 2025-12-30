@@ -33,13 +33,13 @@ class TestGetInfoField:
         assert get_info_field(info, "success") == True
         assert get_info_field(info, "fail") == False
     
-    def test_top_level_priority(self):
-        """Top-level should take priority over final_info."""
+    def test_final_info_priority(self):
+        """final_info should take priority over top-level (contains episode results)."""
         info = {
-            "success": True,
-            "final_info": {"success": False}
+            "success": False,
+            "final_info": {"success": True}
         }
-        # Top-level "success" should be returned
+        # final_info "success" (True) should be returned
         assert get_info_field(info, "success") == True
     
     def test_missing_key_returns_none(self):
@@ -140,49 +140,46 @@ class TestAccumulateRewardComponents:
     def test_accumulate_from_empty(self):
         """Should accumulate into empty dict."""
         acc = {}
-        count = [0]
         reward_comps = {"approach": 0.5, "grasp": 0.3}
         
-        accumulate_reward_components(acc, reward_comps, count)
+        inc = accumulate_reward_components(acc, reward_comps)
         
         assert acc == {"approach": 0.5, "grasp": 0.3}
-        assert count[0] == 1
+        assert inc == 1
     
     def test_accumulate_multiple(self):
         """Should sum values across multiple calls."""
         acc = {"approach": 0.5}
-        count = [1]
         reward_comps = {"approach": 0.5, "lift": 1.0}
         
-        accumulate_reward_components(acc, reward_comps, count)
+        inc = accumulate_reward_components(acc, reward_comps)
         
         assert acc["approach"] == 1.0
         assert acc["lift"] == 1.0
-        assert count[0] == 2
+        assert inc == 1
     
     def test_none_components_noop(self):
         """Should do nothing when components is None."""
         acc = {"existing": 0.5}
-        count = [1]
         
-        accumulate_reward_components(acc, None, count)
+        inc = accumulate_reward_components(acc, None)
         
         assert acc == {"existing": 0.5}
-        assert count[0] == 1  # Not incremented
+        assert inc == 0
     
     def test_tensor_values(self):
         """Should handle tensor values."""
         acc = {}
-        count = [0]
         reward_comps = {
             "approach": torch.tensor(0.5),
             "grasp": torch.tensor(0.3),
         }
         
-        accumulate_reward_components(acc, reward_comps, count)
+        inc = accumulate_reward_components(acc, reward_comps)
         
         assert abs(acc["approach"] - 0.5) < 1e-6
         assert abs(acc["grasp"] - 0.3) < 1e-6
+        assert inc == 1
 
 
 if __name__ == "__main__":

@@ -5,30 +5,69 @@ Provides consistent, early-crash patterns for extracting data from
 ManiSkill/Gymnasium info dictionaries that may have nested structures.
 """
 from typing import Any, Optional
+import numpy as np
+import torch
 
 
 def get_info_field(info: dict, key: str, required: bool = False) -> Any:
-    """Extract field from info, checking top-level then final_info.
+    """Extract field from info, prioritizing final_info for terminó episodes.
     
-    ManiSkill environments may place info fields at either the top level
-    or nested under 'final_info' (for terminated episodes). This function
-    handles both cases consistently.
+    Gymnasium/ManiSkill VectorEnvs use auto-reset. When an episode ends, 
+    the info for the finished episode is stored in 'final_info', while the 
+    top-level info reflects the reset state of the new episode.
+    We prioritize 'final_info' to correctly capture episode completion metrics.
     
     Args:
         info: Step info dict from environment
         key: Field name to extract
-        required: If True, raise KeyError when missing (early crash pattern)
+        required: If True, raise KeyError when missing
         
     Returns:
-        The value if found, None otherwise (unless required=True)
-        
-    Raises:
-        KeyError: If required=True and field not found anywhere
+        The value (or batched values) if found, None otherwise
     """
+    # 1. Try to find in final_info (Episode results take priority)
+    # final_info can be a single dict (sub-env) or a list/array of dicts (VectorEnv)
+    if "final_info" in info and info["final_info"] is not None:
+        final_info_bag = info["final_info"]
+        
+        # Support for VectorEnv (final_info is a list/array of dicts or None)
+        if isinstance(final_info_bag, (list, tuple, np.ndarray)):
+            # If the key is ALSO at top level, we may need to merge
+            base_val = info.get(key)
+            
+            # If we have a base array, we patch it with final values
+            if base_val is not None:
+                # Make a copy if it's a tensor/array to avoid mutating original info
+                if hasattr(base_val, "clone"):
+                    val = base_val.clone()
+                elif hasattr(base_val, "copy"):
+                    val = base_val.copy()
+                else:
+                    val = base_val
+                
+                # Patch indices where final_info is available
+                for i, final in enumerate(final_info_bag):
+                    if final is not None and isinstance(final, dict) and key in final:
+                        # Handle tensor/array assignment
+                        try:
+                            val[i] = final[key]
+                        except Exception:
+                            # Fallback for incompatible types or non-indexable val
+                            pass
+                return val
+            
+            # If no base_val, try to find the first valid final_info entry as a shortcut
+            # (only if we expect a single value, but for VectorEnv we usually want the array)
+            # For simplicity, if no top-level, we fall through to top-level check
+        
+        # Support for single environment dictionary
+        elif isinstance(final_info_bag, dict) and key in final_info_bag:
+            return final_info_bag[key]
+
+    # 2. Fallback to top-level
     if key in info:
         return info[key]
-    if "final_info" in info and key in info["final_info"]:
-        return info["final_info"][key]
+        
     if required:
         raise KeyError(f"Required info field '{key}' not found in info or final_info")
     return None
@@ -103,20 +142,21 @@ def extract_bool(value: Any, env_idx: int = 0) -> bool:
 def accumulate_reward_components(
     accumulator: dict, 
     reward_comps: dict, 
-    count_ref: list
-) -> None:
+) -> int:
     """Accumulate reward components into running sums.
     
     Args:
         accumulator: Dict to accumulate into (mutated in place)
         reward_comps: Current step's reward components
-        count_ref: Single-element list with count (mutated in place)
+        
+    Returns:
+        1 if accumulated, 0 otherwise
     """
     if reward_comps is None:
-        return
+        return 0
     
     for k, v in reward_comps.items():
         val = extract_scalar(v)
         if val is not None:
             accumulator[k] = accumulator.get(k, 0.0) + val
-    count_ref[0] += 1
+    return 1
