@@ -528,18 +528,25 @@ def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_di
     env = FlattenActionWrapper(env)
     env = FlattenStateWrapper(env)
     
-    # 3. Video recording (eval only)
-    if for_eval and video_dir and cfg.capture_video:
-        env = RecordEpisode(
-            env,
-            output_dir=video_dir,
-            save_trajectory=False,
-            save_on_reset=False,
-            max_steps_per_video=int(1e6),
-            video_fps=30,
-            info_on_video=True,
-            render_substeps=False,
-        )
+    # 3. Video/Trajectory recording (eval only, configurable)
+    if for_eval and video_dir:
+        rec_cfg = cfg.get("recording", {})
+        save_video = rec_cfg.get("save_video", True) and cfg.get("capture_video", True)
+        save_trajectory = rec_cfg.get("save_trajectory", True)
+        
+        if save_video or save_trajectory:
+            env = RecordEpisode(
+                env,
+                output_dir=video_dir,
+                save_video=save_video,
+                save_trajectory=save_trajectory,
+                record_env_state=rec_cfg.get("save_env_state", False),
+                info_on_video=rec_cfg.get("info_on_video", True),
+                video_fps=rec_cfg.get("video_fps", 30),
+                save_on_reset=False,
+                max_steps_per_video=int(1e6),
+                render_substeps=False,
+            )
     
     # 4. Vectorization (final layer)
     if for_eval:

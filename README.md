@@ -25,3 +25,6 @@ assets/
     ├── overlay_comparison.png
     └── ... (14 files)
 ```
+
+
+我现在正在研究如何整理与重构代码。我的环境是uv, 代码入口是scripts/train.py。我核心想要研究的是scripts/track1_env.py与scripts/so101.py。我们核心要打交道的是maniskill env,位置在.venv/lib/python3.10/site-packages/mani_skill/envs, 特别是BaseEnv .venv/lib/python3.10/site-packages/mani_skill/envs/sapien_env.py。 

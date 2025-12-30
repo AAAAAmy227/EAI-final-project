@@ -71,3 +71,12 @@ obs_stats_tau: 0.001  # EMA decay rate for additional obs statistics tracking (f
 # Reward Normalization (like gym.wrappers.NormalizeReward, but GPU-compatible)
 normalize_reward: true  # Whether to apply running reward normalization (disable by default)
 reward_clip: 10.0       # Clip normalized rewards to [-clip, clip]
+
+# Recording Configuration (for evaluation)
+recording:
+  save_video: true           # Enable video recording during eval
+  save_trajectory: true      # Enable .h5 trajectory recording
+  save_env_state: false      # Record environment state in trajectory (increases file size)
+  save_step_csv: true        # Export per-step reward data to CSV for analysis
+  info_on_video: true        # Overlay reward/success info on video frames
+  video_fps: 30              # FPS for recorded videos

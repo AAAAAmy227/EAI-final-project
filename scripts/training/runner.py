@@ -34,8 +34,15 @@ from scripts.training.env_utils import make_env
 from scripts.training.ppo_utils import optimized_gae, make_ppo_update_fn
 
 class PPORunner:
-    def __init__(self, cfg):
+    def __init__(self, cfg, eval_only: bool = False):
+        """Initialize PPO Runner.
+        
+        Args:
+            cfg: Hydra configuration object
+            eval_only: If True, skip training environment creation (for standalone eval)
+        """
         self.cfg = cfg
+        self.eval_only = eval_only
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
         
@@ -58,8 +65,11 @@ class PPORunner:
         torch.manual_seed(cfg.seed)
         torch.backends.cudnn.deterministic = True
         
-        # Env setup
-        self.envs = make_env(cfg, self.num_envs)
+        # Training env setup (skip for eval_only mode)
+        if not eval_only:
+            self.envs = make_env(cfg, self.num_envs)
+        else:
+            self.envs = None
         
         # Eval env with video recording
         self.video_dir = None
@@ -69,9 +79,10 @@ class PPORunner:
         self.eval_envs = make_env(cfg, cfg.training.num_eval_envs, for_eval=True, video_dir=self.video_dir)
         self.eval_count = 0  # Counter for eval runs (eval0, eval1, eval2, ...)
         
-        # Determine observation/action dimensions
-        obs_space = self.envs.single_observation_space
-        act_space = self.envs.single_action_space
+        # Determine observation/action dimensions (use eval_envs if training envs not created)
+        source_env = self.envs if self.envs is not None else self.eval_envs
+        obs_space = source_env.single_observation_space
+        act_space = source_env.single_action_space
         print(f"Observation space: {obs_space}")
         print(f"Action space: {act_space}")
         
@@ -366,29 +377,22 @@ class PPORunner:
             raw_reward = infos.get("raw_reward", reward)
             self.episode_returns += raw_reward
             
-            # Record reward components/success/fail
-            reward_comps = None
-            if "reward_components" in infos:
-                reward_comps = infos["reward_components"]
-            elif "final_info" in infos and "reward_components" in infos["final_info"]:
-                reward_comps = infos["final_info"]["reward_components"]
-            
+            # Record reward components using info_utils
+            from scripts.training.info_utils import get_reward_components, get_info_field, extract_scalar
+            reward_comps = get_reward_components(infos)
             if reward_comps is not None:
                 for k, v in reward_comps.items():
-                    val = v.item() if hasattr(v, 'item') else v
-                    self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + val
+                    val = extract_scalar(v)
+                    if val is not None:
+                        self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + val
                 self.reward_component_count += 1
 
-            # Success/Fail counts
-            s_val = infos.get("success_count", None)
-            if s_val is None and "final_info" in infos:
-                s_val = infos["final_info"].get("success_count", None)
+            # Success/Fail counts using info_utils
+            s_val = get_info_field(infos, "success_count")
             if s_val is not None:
                 self.success_count += s_val
                 
-            f_val = infos.get("fail_count", None)
-            if f_val is None and "final_info" in infos:
-                f_val = infos["final_info"].get("fail_count", None)
+            f_val = get_info_field(infos, "fail_count")
             if f_val is not None:
                 self.fail_count += f_val
 
@@ -724,67 +728,49 @@ class PPORunner:
             
             episode_rewards += reward
             
-            # Accumulate reward components (check both top-level and final_info)
-            reward_comps = None
-            if "reward_components" in eval_infos:
-                reward_comps = eval_infos["reward_components"]
-            elif "final_info" in eval_infos and "reward_components" in eval_infos["final_info"]:
-                reward_comps = eval_infos["final_info"]["reward_components"]
+            # Use info_utils for cleaner extraction
+            from scripts.training.info_utils import (
+                get_reward_components, get_reward_components_per_env, 
+                get_info_field, extract_scalar, extract_bool
+            )
             
+            reward_comps = get_reward_components(eval_infos)
             if reward_comps is not None:
                 for k, v in reward_comps.items():
-                    # Handle GPU tensors (convert to scalar if needed)
-                    val = v.item() if hasattr(v, 'item') else v
-                    # Skip None values to avoid TypeError
+                    val = extract_scalar(v)
                     if val is not None:
                         eval_reward_components[k] = eval_reward_components.get(k, 0) + val
                 eval_component_count += 1
                 
-                # Collect per-step data for CSV export
-                for env_idx in range(self.cfg.training.num_eval_envs):
-                    step_data = {
-                        "step": step,
-                        "reward": reward[env_idx].item(),
-                    }
+                # Collect per-step data for CSV export (if enabled)
+                rec_cfg = self.cfg.get("recording", {})
+                if rec_cfg.get("save_step_csv", True):
+                    reward_comps_per_env = get_reward_components_per_env(eval_infos)
                     
-                    # Add each reward component (prefer per-env values if available)
-                    # Check for per-env components first (added in track1_env.py)
-                    reward_comps_per_env = None
-                    if "reward_components_per_env" in eval_infos:
-                        reward_comps_per_env = eval_infos["reward_components_per_env"]
-                    elif "final_info" in eval_infos and "reward_components_per_env" in eval_infos["final_info"]:
-                        reward_comps_per_env = eval_infos["final_info"]["reward_components_per_env"]
-                    
-                    if reward_comps_per_env is not None:
-                        # Use per-environment values (each component is [num_envs] tensor)
-                        for k, v in reward_comps_per_env.items():
-                            # Extract this env's value from the tensor
-                            val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
-                            step_data[k] = val if val is not None else 0.0
-                    else:
-                        # Fallback to averaged values (backward compatibility)
-                        for k, v in reward_comps.items():
-                            # Handle GPU tensors and None values
-                            val = v.item() if hasattr(v, 'item') else v
-                            step_data[k] = val if val is not None else 0.0
-                    
-                    # Add success and fail status for this step
-                    # Check both top-level and final_info for current status
-                    if "success" in eval_infos:
-                        step_data["success"] = bool(eval_infos["success"][env_idx].item())
-                    elif "final_info" in eval_infos and "success" in eval_infos["final_info"]:
-                        step_data["success"] = bool(eval_infos["final_info"]["success"][env_idx].item())
-                    else:
-                        step_data["success"] = False
-                    
-                    if "fail" in eval_infos:
-                        step_data["fail"] = bool(eval_infos["fail"][env_idx].item())
-                    elif "final_info" in eval_infos and "fail" in eval_infos["final_info"]:
-                        step_data["fail"] = bool(eval_infos["final_info"]["fail"][env_idx].item())
-                    else:
-                        step_data["fail"] = False
-                    
-                    step_reward_data[env_idx].append(step_data)
+                    for env_idx in range(self.cfg.training.num_eval_envs):
+                        step_data = {
+                            "step": step,
+                            "reward": reward[env_idx].item(),
+                        }
+                        
+                        # Add reward components (prefer per-env values)
+                        if reward_comps_per_env is not None:
+                            for k, v in reward_comps_per_env.items():
+                                val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
+                                step_data[k] = val if val is not None else 0.0
+                        else:
+                            for k, v in reward_comps.items():
+                                val = extract_scalar(v)
+                                step_data[k] = val if val is not None else 0.0
+                        
+                        # Add success/fail status using info_utils
+                        success_val = get_info_field(eval_infos, "success")
+                        step_data["success"] = extract_bool(success_val, env_idx) if success_val is not None else False
+                        
+                        fail_val = get_info_field(eval_infos, "fail")
+                        step_data["fail"] = extract_bool(fail_val, env_idx) if fail_val is not None else False
+                        
+                        step_reward_data[env_idx].append(step_data)
             
             # Check for episode completion
             done = terminated | truncated
@@ -793,15 +779,14 @@ class PPORunner:
                     eval_returns.append(episode_rewards[idx].item())
                     episode_rewards[idx] = 0.0  # Reset for next episode
                     
-                    # Check success/fail from final_info (ManiSkill provides this)
-                    # Note: success/fail are tensors, use .item() to get Python bool
-                    if "final_info" in eval_infos:
-                        if "success" in eval_infos["final_info"]:
-                            success = eval_infos["final_info"]["success"][idx].item()
-                            eval_successes.append(bool(success))
-                        if "fail" in eval_infos["final_info"]:
-                            fail = eval_infos["final_info"]["fail"][idx].item()
-                            eval_fails.append(bool(fail))
+                    # Check success/fail using info_utils (final_info is checked automatically)
+                    success_val = get_info_field(eval_infos, "success")
+                    if success_val is not None:
+                        eval_successes.append(extract_bool(success_val, idx))
+                    
+                    fail_val = get_info_field(eval_infos, "fail")
+                    if fail_val is not None:
+                        eval_fails.append(extract_bool(fail_val, idx))
             
             # Stop after collecting enough episodes
             if len(eval_returns) >= self.cfg.training.num_eval_envs:
