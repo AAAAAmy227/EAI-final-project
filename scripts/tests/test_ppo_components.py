@@ -2,9 +2,6 @@
 Unit tests for PPO training components.
 Tests to diagnose clipfrac=1, explained_variance=0, approx_kl=4.5 issues.
 """
-import sys
-sys.path.insert(0, "/home/admin/Desktop/eai-final-project")
-
 import torch
 import numpy as np
 from functools import partial

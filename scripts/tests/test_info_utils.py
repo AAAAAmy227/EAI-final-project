@@ -4,9 +4,6 @@ Unit tests for info_utils module.
 Tests the info extraction utilities used in PPORunner for consistent
 handling of ManiSkill info dictionaries.
 """
-import sys
-sys.path.insert(0, "/home/admin/Desktop/eai-final-project")
-
 import pytest
 import torch
 import numpy as np
