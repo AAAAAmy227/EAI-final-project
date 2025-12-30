@@ -405,11 +405,8 @@ class PPORunner:
             # Update for next iteration
             obs = next_obs
         
-        # After loop, current bootstrap_mask for the START of the next rollout is the last next_done
-        last_bootstrap_mask = next_terminated if self.handle_timeout_termination else next_done
-        
         storage["rewards"] *= self.cfg.ppo.reward_scale
-        return obs, last_bootstrap_mask, storage
+        return obs, storage
 
     def train(self):
         print(f"\n{'='*60}")
@@ -420,7 +417,6 @@ class PPORunner:
         
         # Initial reset
         next_obs, _ = self.envs.reset(seed=self.cfg.seed)
-        next_bootstrap_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
         pbar = tqdm.tqdm(range(1, self.num_iterations + 1))
         self.global_step_burnin = None
@@ -441,11 +437,11 @@ class PPORunner:
             torch.compiler.cudagraph_mark_step_begin()
             
             # Rollout
-            next_obs, next_bootstrap_mask, container = self._rollout(next_obs)
+            next_obs, container = self._rollout(next_obs)
             self.global_step += container.numel()
             
             # GAE calculation
-            container = self._compute_gae(container, next_obs, next_bootstrap_mask)
+            container = self._compute_gae(container, next_obs)
             
             # PPO update
             out, clipfracs = self._run_ppo_update(container)
@@ -483,13 +479,12 @@ class PPORunner:
             lrnow = frac * self.cfg.ppo.learning_rate
             self.optimizer.param_groups[0]["lr"].copy_(lrnow)
 
-    def _compute_gae(self, container, next_obs, next_bootstrap_mask):
+    def _compute_gae(self, container, next_obs):
         """Compute GAE advantages and returns.
         
         Args:
             container: TensorDict with rollout data (rewards, vals, bootstrap_mask)
             next_obs: Final observations after rollout
-            next_bootstrap_mask: Bootstrap mask for final step
             
         Returns:
             Updated container with 'advantages' and 'returns' added
@@ -503,7 +498,8 @@ class PPORunner:
             container["vals"],
             container["bootstrap_mask"],
             next_value,
-            next_bootstrap_mask
+            self.cfg.ppo.gamma,
+            self.gae_lambda
         )
         container["advantages"] = advs
         container["returns"] = rets

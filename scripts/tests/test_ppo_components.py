@@ -177,7 +177,7 @@ def test_gae_basic():
     next_terminated = torch.zeros(num_envs, device=device, dtype=torch.bool)
     
     advantages, returns = optimized_gae(
-        rewards, vals, terminated, next_value, next_terminated,
+        rewards, vals, terminated, next_value,
         gamma, gae_lambda
     )
     

@@ -168,7 +168,6 @@ class TestConvergence:
                 rewards_t, values_t,
                 torch.ones_like(rewards_t, dtype=torch.bool),  # All terminal
                 next_value,
-                torch.ones(num_envs, dtype=torch.bool, device=device),
                 gamma=0.99, gae_lambda=0.95
             )
             
@@ -254,7 +253,6 @@ class TestConvergence:
             advantages, returns = optimized_gae(
                 rewards_t, values_t, terminated_t,
                 next_value,
-                torch.zeros(num_envs, dtype=torch.bool, device=device),
                 gamma=0.99, gae_lambda=0.95
             )
             

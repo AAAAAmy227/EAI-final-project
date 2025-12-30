@@ -85,7 +85,7 @@ class TestRolloutShapes:
         next_terminated = torch.zeros(num_envs, dtype=torch.bool, device=device)
         
         advantages, returns = optimized_gae(
-            rewards, vals, terminated, next_value, next_terminated,
+            rewards, vals, terminated, next_value,
             gamma=0.99, gae_lambda=0.95
         )
         

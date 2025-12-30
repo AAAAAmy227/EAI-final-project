@@ -36,10 +36,9 @@ class TestGAECorrectness:
         vals = torch.tensor([[0.5]], device=device)
         terminated = torch.tensor([[False]], device=device)
         next_value = torch.tensor([0.3], device=device)
-        next_terminated = torch.tensor([False], device=device)
         
         advantages, returns = optimized_gae(
-            rewards, vals, terminated, next_value, next_terminated,
+            rewards, vals, terminated, next_value,
             gamma=1.0, gae_lambda=1.0
         )
         
@@ -55,12 +54,11 @@ class TestGAECorrectness:
         """
         rewards = torch.tensor([[1.0]], device=device)
         vals = torch.tensor([[0.5]], device=device)
-        terminated = torch.tensor([[False]], device=device)
+        terminated = torch.tensor([[True]], device=device)  # Terminal!
         next_value = torch.tensor([10.0], device=device)  # Should be ignored
-        next_terminated = torch.tensor([True], device=device)  # Terminal!
         
         advantages, returns = optimized_gae(
-            rewards, vals, terminated, next_value, next_terminated,
+            rewards, vals, terminated, next_value,
             gamma=0.99, gae_lambda=0.95
         )
         
@@ -78,12 +76,11 @@ class TestGAECorrectness:
         """
         rewards = torch.tensor([[1.0], [1.0]], device=device)  # 2 steps
         vals = torch.tensor([[0.3], [0.5]], device=device)
-        terminated = torch.tensor([[False], [False]], device=device)
+        terminated = torch.tensor([[False], [True]], device=device) # Terminal at step 2
         next_value = torch.tensor([0.0], device=device)
-        next_terminated = torch.tensor([True], device=device)
         
         advantages, returns = optimized_gae(
-            rewards, vals, terminated, next_value, next_terminated,
+            rewards, vals, terminated, next_value,
             gamma=0.9, gae_lambda=0.8
         )
         
@@ -107,10 +104,9 @@ class TestGAECorrectness:
         vals = torch.randn(num_steps, num_envs, device=device)
         terminated = torch.zeros(num_steps, num_envs, dtype=torch.bool, device=device)
         next_value = torch.randn(num_envs, device=device)
-        next_terminated = torch.zeros(num_envs, dtype=torch.bool, device=device)
         
         advantages, returns = optimized_gae(
-            rewards, vals, terminated, next_value, next_terminated,
+            rewards, vals, terminated, next_value,
             gamma=0.99, gae_lambda=0.95
         )
         
@@ -130,10 +126,9 @@ class TestGAECorrectness:
         vals = torch.tensor([[0.5], [0.3], [0.2]], device=device)
         terminated = torch.tensor([[False], [True], [False]], device=device)
         next_value = torch.tensor([0.0], device=device)
-        next_terminated = torch.tensor([False], device=device)
         
         advantages, _ = optimized_gae(
-            rewards, vals, terminated, next_value, next_terminated,
+            rewards, vals, terminated, next_value,
             gamma=1.0, gae_lambda=1.0  # Simple case
         )
         

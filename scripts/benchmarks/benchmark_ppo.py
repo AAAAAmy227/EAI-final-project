@@ -14,7 +14,7 @@ from functools import partial
 import sys
 sys.path.insert(0, "/home/admin/Desktop/eai-final-project")
 from scripts.training.agent import Agent
-from scripts.training.ppo_utils import optimized_gae, make_ppo_update_fn
+from scripts.training.ppo_utils import make_ppo_update_fn
 from tensordict import from_module
 from tensordict.nn import CudaGraphModule
 import tensordict

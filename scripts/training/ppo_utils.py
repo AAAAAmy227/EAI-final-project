@@ -8,7 +8,6 @@ def optimized_gae(
     vals: torch.Tensor,
     terminated: torch.Tensor,
     next_value: torch.Tensor,
-    next_terminated: torch.Tensor,
     gamma: float,
     gae_lambda: float
 ):
@@ -21,9 +20,8 @@ def optimized_gae(
     Args:
         rewards: [num_steps, num_envs] reward tensor
         vals: [num_steps, num_envs] value estimates
-        terminated: [num_steps, num_envs] POST-step terminated flags (status of s_{t+1} after step t)
-        next_value: [1, num_envs] or [num_envs] value estimate for the state AFTER the last step
-        next_terminated: [num_envs] whether the state AFTER the last step is terminal
+        terminated: [num_steps, num_envs] POST-step terminated flags
+        next_value: [num_envs] value estimate for the state AFTER the last rollout step (s_{T+1})
         gamma: discount factor
         gae_lambda: GAE lambda
     
@@ -38,14 +36,12 @@ def optimized_gae(
     
     for t in range(num_steps - 1, -1, -1):
         if t == num_steps - 1:
-            # For the last step, use next_terminated and next_value
-            nextnonterminal = 1.0 - next_terminated.float()
             nextvalues = next_value
         else:
-            # For other steps, use terminated[t] and vals[t+1]
-            # terminated[t] corresponds to the end of step t (status of s_{t+1})
-            nextnonterminal = 1.0 - terminated[t].float()
             nextvalues = vals[t + 1]
+        
+        # nextnonterminal corresponds to status of s_{t+1}
+        nextnonterminal = 1.0 - terminated[t].float()
         
         delta = rewards[t] + gamma * nextvalues * nextnonterminal - vals[t]
         lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam

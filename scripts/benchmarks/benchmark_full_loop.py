@@ -144,10 +144,7 @@ def benchmark_training_loop(use_compile: bool, use_cudagraph: bool, num_iteratio
             obs = next_obs
             done = next_done
         
-        # GAE
-        with torch.no_grad():
-            next_value = get_value(obs)
-        advs, rets = gae_fn(storage["rewards"], storage["vals"], storage["dones"], next_value, done)
+        advs, rets = gae_fn(storage["rewards"], storage["vals"], storage["dones"], next_value)
         storage["advantages"] = advs
         storage["returns"] = rets
         
@@ -192,10 +189,7 @@ def benchmark_training_loop(use_compile: bool, use_cudagraph: bool, num_iteratio
             obs = next_obs
             done = next_done
         
-        # GAE
-        with torch.no_grad():
-            next_value = get_value(obs)
-        advs, rets = gae_fn(storage["rewards"], storage["vals"], storage["dones"], next_value, done)
+        advs, rets = gae_fn(storage["rewards"], storage["vals"], storage["dones"], next_value)
         storage["advantages"] = advs
         storage["returns"] = rets
         
