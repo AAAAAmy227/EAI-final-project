@@ -122,8 +122,6 @@ class Track1Env(BaseEnv):
         self.approach_scale = rw_cfg.approach_scale
         self.reach_scale = self.approach_scale
         self.approach_mode = rw_cfg.approach_mode
-        self.gripper_tip_offset = rw_cfg.gripper_tip_offset
-        self.gripper_outward_offset = rw_cfg.gripper_outward_offset
         self.stage_thresholds = rw_cfg.stage_thresholds
         
         self.lift_target = rw_cfg.lift_target
@@ -135,11 +133,7 @@ class Track1Env(BaseEnv):
         self.fail_bounds = rw_cfg.fail_bounds
         self.spawn_bounds = rw_cfg.spawn_bounds
         
-        self.moving_jaw_tip_offset = rw_cfg.moving_jaw_tip_offset
-        self.moving_jaw_outward_offset = rw_cfg.moving_jaw_outward_offset
-        self.approach2_threshold = rw_cfg.approach2_threshold
-        self.approach2_zero_point = rw_cfg.approach2_zero_point
-        
+
         self.horizontal_displacement_threshold = rw_cfg.horizontal_displacement_threshold
         self.grasp_min_force = rw_cfg.grasp_min_force
         self.grasp_max_angle = rw_cfg.grasp_max_angle
@@ -705,113 +699,3 @@ class Track1Env(BaseEnv):
         """Compute dense reward (delegated to handler)."""
         return self.task_handler.compute_dense_reward(info, action)
 
-
-    def _get_gripper_pos(self):
-        """Get the gripper reference position for the right arm.
-        
-        Applies two offsets to gripper_frame_link (fixed jaw tip):
-        1. gripper_tip_offset: back along jaw (towards gripper_link)
-        2. gripper_outward_offset: perpendicular, towards the moving jaw (where cube should be)
-        
-        Returns position where cube center should be when properly grasped.
-        """
-        # Right arm is agents[1] (so101-1, at X=0.481)
-        right_agent = self.agent.agents[1]
-        gripper_link = right_agent.robot.links_map.get("gripper_link")
-        gripper_frame = right_agent.robot.links_map.get("gripper_frame_link")
-        moving_jaw = right_agent.robot.links_map.get("moving_jaw_so101_v1_link")
-        
-        if gripper_frame is None:
-            # Fallback
-            if gripper_link is not None:
-                return gripper_link.pose.p
-            return right_agent.robot.links[-1].pose.p
-        
-        # Start from jaw tip
-        ref_pos = gripper_frame.pose.p.clone()
-        
-        # Apply tip offset (back along jaw direction)
-        if self.gripper_tip_offset != 0 and gripper_link is not None:
-            jaw_direction = gripper_frame.pose.p - gripper_link.pose.p
-            jaw_length = torch.norm(jaw_direction, dim=1, keepdim=True)
-            jaw_unit = jaw_direction / (jaw_length + 1e-6)
-            ref_pos = ref_pos - jaw_unit * self.gripper_tip_offset
-        
-        # Apply outward offset (towards moving jaw, perpendicular to fixed jaw)
-        if self.gripper_outward_offset != 0 and moving_jaw is not None:
-            outward_direction = moving_jaw.pose.p - gripper_frame.pose.p
-            outward_length = torch.norm(outward_direction, dim=1, keepdim=True)
-            outward_unit = outward_direction / (outward_length + 1e-6)
-            ref_pos = ref_pos + outward_unit * self.gripper_outward_offset
-        
-        return ref_pos
-
-    def _get_moving_jaw_pos(self):
-        """Get the moving jaw reference position for the right arm.
-        
-        Uses calibrated local direction: (-0.2, -1, 0.23) normalized, scaled by 1.8
-        Then applies offsets:
-        - moving_jaw_tip_offset: back along the jaw direction
-        - moving_jaw_outward_offset: along local -X towards cube center
-        
-        Returns position where cube center should be when properly grasped.
-        """
-        right_agent = self.agent.agents[1]
-        moving_jaw = right_agent.robot.links_map.get("moving_jaw_so101_v1_link")
-        
-        if moving_jaw is None:
-            # Fallback to fixed jaw
-            return self._get_gripper_pos()
-        
-        # Get moving jaw base position and orientation
-        moving_jaw_base = moving_jaw.pose.p  # [num_envs, 3]
-        moving_jaw_quat = moving_jaw.pose.q  # [num_envs, 4] - SAPIEN uses [w, x, y, z]
-        
-        # Calibrated local direction to jaw tip: (-0.2, -1, 0.23) normalized
-        import torch
-        x_comp, y_comp, z_comp = -0.2, -1.0, 0.23
-        local_forward = torch.tensor([x_comp, y_comp, z_comp], device=self.device, dtype=torch.float32)
-        local_forward = local_forward / torch.norm(local_forward)
-        
-        # Convert quaternion to rotation matrix and apply to local_forward
-        # SAPIEN quaternion: [w, x, y, z]
-        w, x, y, z = moving_jaw_quat[:, 0], moving_jaw_quat[:, 1], moving_jaw_quat[:, 2], moving_jaw_quat[:, 3]
-        
-        # Rotation matrix from quaternion
-        R00 = 1 - 2*(y**2 + z**2)
-        R01 = 2*(x*y - w*z)
-        R02 = 2*(x*z + w*y)
-        R10 = 2*(x*y + w*z)
-        R11 = 1 - 2*(x**2 + z**2)
-        R12 = 2*(y*z - w*x)
-        R20 = 2*(x*z - w*y)
-        R21 = 2*(y*z + w*x)
-        R22 = 1 - 2*(x**2 + y**2)
-        
-        # Apply rotation to local_forward: world_dir = R @ local_forward
-        jaw_direction = torch.stack([
-            R00 * local_forward[0] + R01 * local_forward[1] + R02 * local_forward[2],
-            R10 * local_forward[0] + R11 * local_forward[1] + R12 * local_forward[2],
-            R20 * local_forward[0] + R21 * local_forward[1] + R22 * local_forward[2],
-        ], dim=1)  # [num_envs, 3]
-        
-        # Scale to reach jaw tip (calibrated: 1.8 * 0.045 = 0.081)
-        scale = 1.8
-        tip_dist = 0.045 * scale
-        ref_pos = moving_jaw_base + jaw_direction * tip_dist
-        
-        # Apply tip offset (back along jaw direction)
-        if self.moving_jaw_tip_offset != 0:
-            ref_pos = ref_pos - jaw_direction * self.moving_jaw_tip_offset
-        
-        # Apply outward offset (along local -X, towards cube center)
-        if self.moving_jaw_outward_offset != 0:
-            local_minus_x = torch.tensor([-1.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
-            outward_dir = torch.stack([
-                R00 * local_minus_x[0] + R01 * local_minus_x[1] + R02 * local_minus_x[2],
-                R10 * local_minus_x[0] + R11 * local_minus_x[1] + R12 * local_minus_x[2],
-                R20 * local_minus_x[0] + R21 * local_minus_x[1] + R22 * local_minus_x[2],
-            ], dim=1)
-            ref_pos = ref_pos + outward_dir * self.moving_jaw_outward_offset
-        
-        return ref_pos

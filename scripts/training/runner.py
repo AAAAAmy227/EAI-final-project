@@ -336,12 +336,12 @@ class PPORunner:
         """
         # 1. Pre-allocate TensorDict (Zero-copy optimization)
         storage = tensordict.TensorDict({
-            "obs": torch.zeros((self.num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
-            "bootstrap_mask": torch.zeros((self.num_steps, self.num_envs), device=self.device, dtype=torch.bool),
-            "vals": torch.zeros((self.num_steps, self.num_envs), device=self.device),
-            "actions": torch.zeros((self.num_steps, self.num_envs, self.n_act), device=self.device),
-            "logprobs": torch.zeros((self.num_steps, self.num_envs), device=self.device),
-            "rewards": torch.zeros((self.num_steps, self.num_envs), device=self.device),
+            "obs": torch.empty((self.num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
+            "bootstrap_mask": torch.empty((self.num_steps, self.num_envs), device=self.device, dtype=torch.bool),
+            "vals": torch.empty((self.num_steps, self.num_envs), device=self.device),
+            "actions": torch.empty((self.num_steps, self.num_envs, self.n_act), device=self.device),
+            "logprobs": torch.empty((self.num_steps, self.num_envs), device=self.device),
+            "rewards": torch.empty((self.num_steps, self.num_envs), device=self.device),
         }, batch_size=[self.num_steps, self.num_envs], device=self.device)
 
         for step in range(self.num_steps):
