@@ -21,9 +21,9 @@ def optimized_gae(
     Args:
         rewards: [num_steps, num_envs] reward tensor
         vals: [num_steps, num_envs] value estimates
-        terminated: [num_steps, num_envs] PRE-step terminated flags (not including truncation)
-        next_value: [1, num_envs] or [num_envs] value estimate for final state
-        next_terminated: [num_envs] whether final state is terminated
+        terminated: [num_steps, num_envs] POST-step terminated flags (status of s_{t+1} after step t)
+        next_value: [1, num_envs] or [num_envs] value estimate for the state AFTER the last step
+        next_terminated: [num_envs] whether the state AFTER the last step is terminal
         gamma: discount factor
         gae_lambda: GAE lambda
     
@@ -42,8 +42,9 @@ def optimized_gae(
             nextnonterminal = 1.0 - next_terminated.float()
             nextvalues = next_value
         else:
-            # For other steps, use terminated[t+1] and vals[t+1]
-            nextnonterminal = 1.0 - terminated[t + 1].float()
+            # For other steps, use terminated[t] and vals[t+1]
+            # terminated[t] corresponds to the end of step t (status of s_{t+1})
+            nextnonterminal = 1.0 - terminated[t].float()
             nextvalues = vals[t + 1]
         
         delta = rewards[t] + gamma * nextvalues * nextnonterminal - vals[t]

@@ -338,12 +338,11 @@ class PPORunner:
         done = terminations | truncations
         return next_obs, reward, terminations, truncations, done, info
 
-    def _rollout(self, obs, bootstrap_mask):
+    def _rollout(self, obs):
         """Collect trajectories with pre-allocated storage.
         
         Args:
-            obs: Current observations (already flat and normalized)
-            bootstrap_mask: Mask for GAE bootstrap. 
+            obs: Initial observations for this rollout
         """
         # 1. Pre-allocate TensorDict (Zero-copy optimization)
         storage = tensordict.TensorDict({
@@ -356,9 +355,8 @@ class PPORunner:
         }, batch_size=[self.num_steps, self.num_envs], device=self.device)
 
         for step in range(self.num_steps):
-            # 2. In-place write
+            # 2. Store current state before taking action
             storage["obs"][step] = obs
-            storage["bootstrap_mask"][step] = bootstrap_mask
             
             # Inference (Normalization is already in obs)
             with torch.no_grad():
@@ -370,10 +368,12 @@ class PPORunner:
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
             
-            # Rewards (normalized by wrapper for training)
+            # 3. Store result of the step at current index (POST-step storage)
+            # This makes storage["bootstrap_mask"][step] the status of next_obs (s_{t+1})
             storage["rewards"][step] = reward
+            storage["bootstrap_mask"][step] = next_terminated if self.handle_timeout_termination else next_done
             
-            # 2. Accumulate RAW reward for logging
+            # Accumulate RAW reward for logging
             raw_reward = infos.get("raw_reward", reward)
             self.episode_returns += raw_reward
             
@@ -385,7 +385,7 @@ class PPORunner:
                     val = extract_scalar(v)
                     if val is not None:
                         self.reward_component_sum[k] = self.reward_component_sum.get(k, 0) + val
-                self.reward_component_count += 1
+            self.reward_component_count += 1
 
             # Success/Fail counts using info_utils
             s_val = get_info_field(infos, "success_count")
@@ -409,10 +409,12 @@ class PPORunner:
 
             # Update for next iteration
             obs = next_obs
-            bootstrap_mask = next_terminated if self.handle_timeout_termination else next_done
+        
+        # After loop, current bootstrap_mask for the START of the next rollout is the last next_done
+        last_bootstrap_mask = next_terminated if self.handle_timeout_termination else next_done
         
         storage["rewards"] *= self.cfg.ppo.reward_scale
-        return obs, bootstrap_mask, storage
+        return obs, last_bootstrap_mask, storage
 
     def train(self):
         print(f"\n{'='*60}")
@@ -444,7 +446,7 @@ class PPORunner:
             torch.compiler.cudagraph_mark_step_begin()
             
             # Rollout
-            next_obs, next_bootstrap_mask, container = self._rollout(next_obs, next_bootstrap_mask)
+            next_obs, next_bootstrap_mask, container = self._rollout(next_obs)
             self.global_step += container.numel()
             
             # GAE calculation
