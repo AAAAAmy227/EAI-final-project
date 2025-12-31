@@ -11,6 +11,7 @@ import time
 from collections import deque
 from functools import partial
 from pathlib import Path
+from typing import Dict
 import sys
 import subprocess
 import threading
@@ -37,6 +38,7 @@ from scripts.training.info_utils import (
     get_info_field, extract_scalar, extract_bool,
     accumulate_reward_components, accumulate_reward_components_gpu
 )
+from scripts.training.metrics_utils import get_metric_specs_from_env, aggregate_metrics
 
 class PPORunner:
     def __init__(self, cfg, eval_only: bool = False):
@@ -144,18 +146,10 @@ class PPORunner:
         # Runtime vars
         self.global_step = 0
         self.avg_returns = deque(maxlen=20)
-        self.reward_component_sum = {}  # Accumulated reward components (GPU tensors during training)
-        self.reward_component_count = 0  # Step count for averaging
-        self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)  # GPU accumulator
-        self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)  # GPU accumulator
         
-        # Termination tracking for logging (GPU tensors to avoid sync during rollout)
-        self.terminated_count = torch.tensor(0, device=self.device, dtype=torch.int64)
-        self.truncated_count = torch.tensor(0, device=self.device, dtype=torch.int64)
-        
-        # Episode return tracking (per-env accumulator)
-        self.episode_returns = torch.zeros(self.num_envs, device=self.device)
-        self.global_step_burnin = None
+        # Episode metrics storage (populated by _aggregate_metrics)
+        # Each key maps to a list of values from completed episodes
+        self.episode_metrics = {}
         
         # Handle timeout termination (if True, truncated episodes bootstrap)
         self.handle_timeout_termination = cfg.ppo.get("handle_timeout_termination", True)
@@ -343,6 +337,15 @@ class PPORunner:
         done = terminations | truncations
         return next_obs, reward, terminations, truncations, done, info
 
+    def _get_metric_specs(self) -> Dict[str, str]:
+        """Get metric aggregation specifications from task handler."""
+        return get_metric_specs_from_env(self.envs)
+
+    def _aggregate_metrics(self, metrics_storage: Dict[str, torch.Tensor], 
+                          metric_specs: Dict[str, str]) -> None:
+        """Aggregate rollout metrics into episode_metrics storage."""
+        aggregate_metrics(metrics_storage, metric_specs, self.episode_metrics)
+
 
     def _rollout(self, obs, num_steps):
         """Collect trajectories with pre-allocated storage.
@@ -350,7 +353,7 @@ class PPORunner:
         Args:
             obs: Initial observations for this rollout
         """
-        # 1. Pre-allocate TensorDict (Zero-copy optimization)
+        # 1. Pre-allocate TensorDict for rollout data (Zero-copy optimization)
         storage = tensordict.TensorDict({
             "obs": torch.empty((num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
             "bootstrap_mask": torch.empty((num_steps, self.num_envs), device=self.device, dtype=torch.bool),
@@ -361,8 +364,22 @@ class PPORunner:
             "rewards": torch.empty((num_steps, self.num_envs), device=self.device),
         }, batch_size=[num_steps, self.num_envs], device=self.device)
 
+        # 2. Get metric aggregation specs from task handler
+        metric_specs = self._get_metric_specs()
+        
+        # 3. Pre-allocate storage for metrics (all on GPU!)
+        metrics_storage = {
+            "done_mask": torch.empty((num_steps, self.num_envs), dtype=torch.bool, device=self.device),
+        }
+        # Pre-allocate for all known metrics
+        for metric_name in metric_specs.keys():
+            # Default to float32, will be overridden on first assignment if needed
+            metrics_storage[metric_name] = torch.empty((num_steps, self.num_envs), 
+                                                       dtype=torch.float32, 
+                                                       device=self.device)
+
         for step in range(num_steps):
-            # 2. Store current state before taking action
+            # Store current state before taking action
             storage["obs"][step] = obs
             
             # Inference (Normalization is already in obs)
@@ -376,25 +393,44 @@ class PPORunner:
             # Environment Step
             next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action, self.envs)
             
-            # 3. Store result of the step at current index (POST-step storage)
-            # This makes storage["bootstrap_mask"][step] the status of next_obs (s_{t+1})
+            # Store rollout data
             storage["rewards"][step] = reward
             storage["bootstrap_mask"][step] = next_terminated if self.handle_timeout_termination else next_done
             
-            # # Update metrics (reward components, returns, etc.)
-            # self._update_metrics(
-            #     reward, next_done, next_terminated, next_truncated, infos,
-            #     self.episode_returns, self.avg_returns, self.reward_component_sum,
-            #     is_training=True
-            # )
-
+            # Extract metrics from final_info if available (episode completion)
+            info_to_log = infos.get("final_info", infos)
             
-            if "final_info" in infos:
-                infos = infos["final_info"]
-            # "raw reward" by reward wrapper, and returns of env evaluate()
-
+            # Store done mask
+            metrics_storage["done_mask"][step] = next_done
+            
+            # Extract and store each metric (all on GPU)
+            for metric_name in metric_specs.keys():
+                if metric_name in info_to_log:
+                    value = info_to_log[metric_name]
+                    
+                    # Handle "episode" dict from ManiSkill
+                    if metric_name in ["return", "episode_len", "success_once", "fail_once"]:
+                        episode_info = info_to_log.get("episode")
+                        if episode_info is not None and metric_name in episode_info:
+                            value = episode_info[metric_name]
+                        else:
+                            value = None
+                    
+                    # Store the value if it exists
+                    if value is not None:
+                        if isinstance(value, torch.Tensor):
+                            metrics_storage[metric_name][step] = value.float()
+                        else:
+                            metrics_storage[metric_name][step] = float(value)
+                else:
+                    # Fill with zeros if metric not present
+                    metrics_storage[metric_name][step] = 0.0
+            
             # Update for next iteration
             obs = next_obs
+        
+        # 4. Aggregate all metrics at once (GPU -> CPU transfer happens here)
+        self._aggregate_metrics(metrics_storage, metric_specs)
         
         return next_obs, storage
 
@@ -619,8 +655,6 @@ class PPORunner:
         logs = {
             "charts/SPS": speed,
             "charts/learning_rate": lr,
-            "charts/terminated_count": self.terminated_count,
-            "charts/truncated_count": self.truncated_count,
             "losses/value_loss": out["v_loss"].item(),
             "losses/policy_loss": out["pg_loss"].item(),
             "losses/entropy": out["entropy_loss"].item(),
@@ -648,20 +682,43 @@ class PPORunner:
         return logs
 
     def _build_reward_component_logs(self) -> dict:
-        """Build reward component logs and reset accumulators."""
+        """Build reward component logs from episode_metrics and reset.
+        
+        Computes mean for all collected episode metrics and prepares them
+        for wandb logging with appropriate prefixes.
+        """
         logs = {}
         
-        if self.reward_component_count > 0:
-            for name, total in self.reward_component_sum.items():
-                logs[f"reward/{name}"] = total / self.reward_component_count
-            logs["reward/success_count"] = self.success_count.item() if hasattr(self.success_count, 'item') else self.success_count
-            logs["reward/fail_count"] = self.fail_count.item() if hasattr(self.fail_count, 'item') else self.fail_count
+        if not self.episode_metrics:
+            return logs
+        
+        # Build logs for all metrics
+        for metric_name, values in self.episode_metrics.items():
+            if not values:
+                continue
             
-            # Reset accumulators
-            self.reward_component_sum = {}
-            self.reward_component_count = 0
-            self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)
-            self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)
+            # Compute mean (works for both float metrics and boolean success/fail)
+            mean_value = np.mean(values)
+            
+            # Add appropriate prefix
+            if metric_name in ["success", "fail", "success_once", "fail_once"]:
+                # These are rates (mean of boolean values)
+                logs[f"rollout/{metric_name}_rate"] = mean_value
+            elif metric_name in ["return", "episode_len"]:
+                # Episode-level stats
+                logs[f"rollout/{metric_name}"] = mean_value
+            elif metric_name == "raw_reward":
+                logs[f"rollout/raw_reward_mean"] = mean_value
+            else:
+                # Task-specific reward components
+                logs[f"reward/{metric_name}"] = mean_value
+        
+        # Also update avg_returns for compatibility
+        if "return" in self.episode_metrics and self.episode_metrics["return"]:
+            self.avg_returns.extend(self.episode_metrics["return"])
+        
+        # Reset for next iteration
+        self.episode_metrics = {}
         
         return logs
 

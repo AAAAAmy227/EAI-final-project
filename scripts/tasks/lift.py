@@ -12,6 +12,17 @@ class LiftTaskHandler(BaseTaskHandler):
         self.grasp_success_rate: Optional[torch.Tensor] = None
         self.lift_success_rate: Optional[torch.Tensor] = None
         self.task_success_rate: Optional[torch.Tensor] = None
+    
+    @classmethod
+    def get_custom_metric_aggregations(cls) -> Dict[str, str]:
+        """Define Lift task-specific metrics and their aggregations."""
+        return {
+            "grasp_reward": "mean",
+            "lift_reward": "mean",
+            "moving_distance": "mean",
+            "grasp_success": "mean",
+            "lift_success": "mean",
+        }
 
     def initialize_episode(self, env_idx, options):
         b = len(env_idx)
