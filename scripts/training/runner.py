@@ -32,6 +32,11 @@ from tensordict.nn import CudaGraphModule
 from scripts.training.agent import Agent
 from scripts.training.env_utils import make_env
 from scripts.training.ppo_utils import optimized_gae, make_ppo_update_fn
+from scripts.training.info_utils import (
+    get_reward_components, get_reward_components_per_env, 
+    get_info_field, extract_scalar, extract_bool,
+    accumulate_reward_components, accumulate_reward_components_gpu
+)
 
 class PPORunner:
     def __init__(self, cfg, eval_only: bool = False):
@@ -139,14 +144,14 @@ class PPORunner:
         # Runtime vars
         self.global_step = 0
         self.avg_returns = deque(maxlen=20)
-        self.reward_component_sum = {}  # Accumulated reward components
+        self.reward_component_sum = {}  # Accumulated reward components (GPU tensors during training)
         self.reward_component_count = 0  # Step count for averaging
         self.success_count = torch.tensor(0, device=self.device, dtype=torch.float32)  # GPU accumulator
         self.fail_count = torch.tensor(0, device=self.device, dtype=torch.float32)  # GPU accumulator
         
-        # Termination tracking for logging
-        self.terminated_count = 0
-        self.truncated_count = 0
+        # Termination tracking for logging (GPU tensors to avoid sync during rollout)
+        self.terminated_count = torch.tensor(0, device=self.device, dtype=torch.int64)
+        self.truncated_count = torch.tensor(0, device=self.device, dtype=torch.int64)
         
         # Episode return tracking (per-env accumulator)
         self.episode_returns = torch.zeros(self.num_envs, device=self.device)
@@ -338,7 +343,7 @@ class PPORunner:
         done = terminations | truncations
         return next_obs, reward, terminations, truncations, done, info
 
-    def _rollout(self, obs):
+    def _rollout(self, obs, num_steps):
         """Collect trajectories with pre-allocated storage.
         
         Args:
@@ -346,15 +351,15 @@ class PPORunner:
         """
         # 1. Pre-allocate TensorDict (Zero-copy optimization)
         storage = tensordict.TensorDict({
-            "obs": torch.empty((self.num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
-            "bootstrap_mask": torch.empty((self.num_steps, self.num_envs), device=self.device, dtype=torch.bool),
-            "vals": torch.empty((self.num_steps, self.num_envs), device=self.device),
-            "actions": torch.empty((self.num_steps, self.num_envs, self.n_act), device=self.device),
-            "logprobs": torch.empty((self.num_steps, self.num_envs), device=self.device),
-            "rewards": torch.empty((self.num_steps, self.num_envs), device=self.device),
-        }, batch_size=[self.num_steps, self.num_envs], device=self.device)
+            "obs": torch.empty((num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
+            "bootstrap_mask": torch.empty((num_steps, self.num_envs), device=self.device, dtype=torch.bool),
+            "vals": torch.empty((num_steps, self.num_envs), device=self.device),
+            "actions": torch.empty((num_steps, self.num_envs, self.n_act), device=self.device),
+            "logprobs": torch.empty((num_steps, self.num_envs), device=self.device),
+            "rewards": torch.empty((num_steps, self.num_envs), device=self.device),
+        }, batch_size=[num_steps, self.num_envs], device=self.device)
 
-        for step in range(self.num_steps):
+        for step in range(num_steps):
             # 2. Store current state before taking action
             storage["obs"][step] = obs
             
@@ -373,40 +378,85 @@ class PPORunner:
             storage["rewards"][step] = reward
             storage["bootstrap_mask"][step] = next_terminated if self.handle_timeout_termination else next_done
             
-            # Accumulate RAW reward for logging
-            raw_reward = infos.get("raw_reward", reward)
-            self.episode_returns += raw_reward
-            
-            # Record reward components using info_utils
-            from scripts.training.info_utils import get_reward_components, get_info_field, accumulate_reward_components
-            reward_comps = get_reward_components(infos)
-            self.reward_component_count += accumulate_reward_components(self.reward_component_sum, reward_comps)
-
-            # Success/Fail counts using info_utils
-            s_val = get_info_field(infos, "success_count")
-            if s_val is not None:
-                self.success_count += s_val
-                
-            f_val = get_info_field(infos, "fail_count")
-            if f_val is not None:
-                self.fail_count += f_val
-
-            # Log episodic returns
-            if next_done.any():
-                for idx in torch.where(next_done)[0]:
-                    if next_terminated[idx].item():
-                        self.terminated_count += 1
-                    else:
-                        self.truncated_count += 1
-                    
-                    self.avg_returns.append(self.episode_returns[idx].item())
-                    self.episode_returns[idx] = 0.0
+            # Update metrics (reward components, returns, etc.)
+            self._update_metrics(
+                reward, next_done, next_terminated, next_truncated, infos,
+                self.episode_returns, self.avg_returns, self.reward_component_sum,
+                is_training=True
+            )
 
             # Update for next iteration
             obs = next_obs
         
         storage["rewards"] *= self.cfg.ppo.reward_scale
         return obs, storage
+
+    def _update_metrics(self, reward, done, terminated, truncated, infos, 
+                       episode_returns, avg_returns_list, reward_sum_dict,
+                       is_training=True, successes_list=None, fails_list=None):
+        """Vectorized update of metrics during rollout or evaluation.
+        
+        Performance Note:
+            This function is optimized to keep operations on GPU as much as possible.
+            - Reward components are accumulated on GPU (training & eval).
+            - Episode returns are sliced/masked on GPU and transferred to CPU in one batch.
+            - Success/Fail flags are masked on GPU and transferred to CPU in one batch.
+        """
+        # 1. Accumulate RAW reward (on GPU)
+        raw_reward = get_info_field(infos, "raw_reward")
+        episode_returns += raw_reward
+        
+        # 2. Record reward components (Always GPU efficiently)
+        reward_comps = get_reward_components(infos)
+        # Use GPU accumulation for both training and eval to avoid .item() calls
+        count_inc = accumulate_reward_components_gpu(reward_sum_dict, reward_comps, self.device)
+        
+        if is_training:
+            self.reward_component_count += count_inc
+            
+            # Success/Fail counts (GPU accumulation)
+            s_val = get_info_field(infos, "success_count")
+            if s_val is not None: 
+                self.success_count = self.success_count + s_val
+            f_val = get_info_field(infos, "fail_count")
+            if f_val is not None: 
+                self.fail_count = self.fail_count + f_val
+            
+            # Terminated/truncated counts (GPU accumulation)
+            self.terminated_count = self.terminated_count + terminated.sum()
+            self.truncated_count = self.truncated_count + (done & ~terminated).sum()
+        
+        # 3. Episode completion handling
+        if done.any():
+            # Reset returns for completed episodes (GPU-only operation)
+            completed_mask = done
+            
+            # Efficient returns collection (Batch transfer to CPU)
+            completed_returns = episode_returns[completed_mask].cpu().tolist()
+            avg_returns_list.extend(completed_returns)
+            
+            # Reset returns for completed episodes
+            episode_returns[completed_mask] = 0.0
+            
+            # Collect success/fail status (Eval optimized)
+            if not is_training:
+                if successes_list is not None:
+                    s_field = get_info_field(infos, "success")
+                    if s_field is not None:
+                        # Vectorized extraction: mask -> cpu -> list
+                        vals = s_field[completed_mask]
+                        if hasattr(vals, "cpu"):
+                            vals = vals.cpu().tolist()
+                        successes_list.extend([bool(x) for x in vals])
+                
+                if fails_list is not None:
+                    f_field = get_info_field(infos, "fail")
+                    if f_field is not None:
+                        vals = f_field[completed_mask]
+                        if hasattr(vals, "cpu"):
+                            vals = vals.cpu().tolist()
+                        fails_list.extend([bool(x) for x in vals])
+
 
     def train(self):
         print(f"\n{'='*60}")
@@ -437,7 +487,7 @@ class PPORunner:
             torch.compiler.cudagraph_mark_step_begin()
             
             # Rollout
-            next_obs, container = self._rollout(next_obs)
+            next_obs, container = self._rollout(next_obs, self.num_steps)
             self.global_step += container.numel()
             
             # GAE calculation
@@ -694,7 +744,7 @@ class PPORunner:
         
         # Track reward components during eval
         eval_reward_components = {}
-        eval_component_count = 0
+        self.num_eval_envs_eval = self.cfg.training.num_eval_envs
         
         # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}
         step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
@@ -713,69 +763,41 @@ class PPORunner:
         # Add a small buffer for safety
         max_steps += 2
         
+        eval_total_steps = 0
         for step in range(max_steps):
             # eval_obs is already flat and normalized due to wrappers
             with torch.no_grad():
                 eval_action = agent.get_action(eval_obs, deterministic=True)
             eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
+            eval_total_steps += self.cfg.training.num_eval_envs
             
-            episode_rewards += reward
-            
-            # Use info_utils for cleaner extraction
-            from scripts.training.info_utils import (
-                get_reward_components, get_reward_components_per_env, 
-                get_info_field, extract_scalar, extract_bool,
-                accumulate_reward_components
-            )
-            
-            reward_comps = get_reward_components(eval_infos)
-            eval_component_count += accumulate_reward_components(eval_reward_components, reward_comps)
-            
-            # Collect per-step data for CSV export (if enabled)
+            # Record per-step data for CSV (if enabled)
             rec_cfg = self.cfg.get("recording", {})
             if rec_cfg.get("save_step_csv", True):
                 reward_comps_per_env = get_reward_components_per_env(eval_infos)
+                s_field = get_info_field(eval_infos, "success")
+                f_field = get_info_field(eval_infos, "fail")
                 
-                for env_idx in range(self.cfg.training.num_eval_envs):
-                    step_data = {
-                        "step": step,
-                        "reward": reward[env_idx].item(),
-                    }
+                for env_idx in range(self.num_eval_envs_eval): # Using local helper or num_eval_envs
+                    step_data = {"step": step, "reward": reward[env_idx].item()}
                     
-                    # Add reward components (prefer per-env values)
+                    # Add components
                     if reward_comps_per_env is not None:
                         for k, v in reward_comps_per_env.items():
                             val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
                             step_data[k] = val if val is not None else 0.0
-                    else:
-                        for k, v in reward_comps.items():
-                            val = extract_scalar(v)
-                            step_data[k] = val if val is not None else 0.0
                     
-                    # Add success/fail status using info_utils
-                    success_val = get_info_field(eval_infos, "success")
-                    step_data["success"] = extract_bool(success_val, env_idx) if success_val is not None else False
-                    
-                    fail_val = get_info_field(eval_infos, "fail")
-                    step_data["fail"] = extract_bool(fail_val, env_idx) if fail_val is not None else False
-                    
+                    step_data["success"] = extract_bool(s_field, env_idx)
+                    step_data["fail"] = extract_bool(f_field, env_idx)
                     step_reward_data[env_idx].append(step_data)
-            
-            # Check for episode completion
+
+            # Vectorized metric updates
             done = terminated | truncated
-            if done.any():
-                for idx in torch.where(done)[0]:
-                    eval_returns.append(episode_rewards[idx].item())
-                    episode_rewards[idx] = 0.0  # Reset for next episode
-                    
-                    # Check success/fail using info_utils (final_info is checked automatically)
-                    success_val = get_info_field(eval_infos, "success")
-                    if success_val is not None:
-                        eval_successes.append(extract_bool(success_val, idx))
-                    
-                    fail_val = get_info_field(eval_infos, "fail")
-                    if fail_val is not None:
-                        eval_fails.append(extract_bool(fail_val, idx))
+            self._update_metrics(
+                reward, done, terminated, truncated, eval_infos,
+                episode_rewards, eval_returns, eval_reward_components,
+                is_training=False, successes_list=eval_successes, fails_list=eval_fails
+            )
             
             # Stop after collecting enough episodes
             if len(eval_returns) >= self.cfg.training.num_eval_envs:
@@ -795,9 +817,9 @@ class PPORunner:
             }
             
             # Add eval reward components
-            if eval_component_count > 0:
+            if eval_total_steps > 0:
                 for name, total in eval_reward_components.items():
-                    eval_logs[f"eval_reward/{name}"] = total / eval_component_count
+                    eval_logs[f"eval_reward/{name}"] = total / eval_total_steps
             
             if self.cfg.wandb.enabled:
                 wandb.log(eval_logs, step=self.global_step)

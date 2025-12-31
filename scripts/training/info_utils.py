@@ -143,7 +143,10 @@ def accumulate_reward_components(
     accumulator: dict, 
     reward_comps: dict, 
 ) -> int:
-    """Accumulate reward components into running sums.
+    """Accumulate reward components into running sums (CPU version).
+    
+    WARNING: This version uses .item() which causes GPU-CPU sync.
+    For training rollouts, use accumulate_reward_components_gpu instead.
     
     Args:
         accumulator: Dict to accumulate into (mutated in place)
@@ -159,4 +162,44 @@ def accumulate_reward_components(
         val = extract_scalar(v)
         if val is not None:
             accumulator[k] = accumulator.get(k, 0.0) + val
+    return 1
+
+
+def accumulate_reward_components_gpu(
+    accumulator: dict, 
+    reward_comps: dict,
+    device: torch.device,
+) -> int:
+    """GPU-efficient accumulation of reward components.
+    
+    Keeps all values as GPU tensors to avoid GPU-CPU sync during rollout.
+    Only convert to CPU when logging.
+    
+    Args:
+        accumulator: Dict to accumulate into (mutated in place). Values are GPU tensors.
+        reward_comps: Current step's reward components (dict of scalar tensors or floats)
+        device: Target device for tensors
+        
+    Returns:
+        1 if accumulated, 0 otherwise
+    """
+    if reward_comps is None:
+        return 0
+    
+    for k, v in reward_comps.items():
+        if v is None:
+            continue
+        
+        # Convert to tensor if needed, keeping on GPU
+        if isinstance(v, torch.Tensor):
+            val = v.detach()  # Detach to avoid graph issues
+        else:
+            val = torch.tensor(v, device=device, dtype=torch.float32)
+        
+        if k in accumulator:
+            accumulator[k] = accumulator[k] + val
+        else:
+            # Clone to avoid reference issues
+            accumulator[k] = val.clone() if isinstance(val, torch.Tensor) else val
+    
     return 1
