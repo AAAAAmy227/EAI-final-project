@@ -347,55 +347,94 @@ class PPORunner:
         aggregate_metrics(metrics_storage, metric_specs, self.episode_metrics)
 
 
-    def _rollout(self, obs, num_steps):
-        """Collect trajectories with pre-allocated storage.
+    def _rollout(self, obs, num_steps, envs=None, policy_fn=None,
+                 collect_for_training=True, record_step_data=False):
+        """Unified rollout method for both training and evaluation.
         
         Args:
-            obs: Initial observations for this rollout
+            obs: Initial observations
+            num_steps: Number of steps to rollout
+            envs: Environment instance (defaults to self.envs for training)
+            policy_fn: Policy function that takes obs and returns (action, logprob, entropy, value).
+                      For eval, logprob/entropy/value can be None. Defaults to self.policy.
+            collect_for_training: If True, collect training data (obs, actions, logprobs, values, advantages).
+                                 If False, only collect metrics.
+            record_step_data: If True, record per-env step-by-step data for CSV export (eval only).
+            
+        Returns:
+            next_obs: Final observations after rollout
+            storage: TensorDict with rollout data (if collect_for_training, else None)
+            step_data_per_env: Dict[env_idx, List[step_data]] (if record_step_data, else None)
         """
-        # 1. Pre-allocate TensorDict for rollout data (Zero-copy optimization)
-        storage = tensordict.TensorDict({
-            "obs": torch.empty((num_steps, self.num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
-            "bootstrap_mask": torch.empty((num_steps, self.num_envs), device=self.device, dtype=torch.bool),
-            "vals": torch.empty((num_steps, self.num_envs), device=self.device),
-            "actions": torch.empty((num_steps, self.num_envs, self.n_act), device=self.device),
-            "logprobs": torch.empty((num_steps, self.num_envs), device=self.device),
-            "entropies": torch.empty((num_steps, self.num_envs), device=self.device),
-            "rewards": torch.empty((num_steps, self.num_envs), device=self.device),
-        }, batch_size=[num_steps, self.num_envs], device=self.device)
+        # Defaults
+        if envs is None:
+            envs = self.envs
+        if policy_fn is None:
+            policy_fn = lambda obs: self.policy(obs=obs)
+        
+        num_envs = envs.num_envs
+        
+        # 1. Pre-allocate TensorDict for training data (only if needed)
+        storage = None
+        if collect_for_training:
+            storage = tensordict.TensorDict({
+                "obs": torch.empty((num_steps, num_envs, self.n_obs), device=self.device, dtype=obs.dtype),
+                "bootstrap_mask": torch.empty((num_steps, num_envs), device=self.device, dtype=torch.bool),
+                "vals": torch.empty((num_steps, num_envs), device=self.device),
+                "actions": torch.empty((num_steps, num_envs, self.n_act), device=self.device),
+                "logprobs": torch.empty((num_steps, num_envs), device=self.device),
+                "entropies": torch.empty((num_steps, num_envs), device=self.device),
+                "rewards": torch.empty((num_steps, num_envs), device=self.device),
+            }, batch_size=[num_steps, num_envs], device=self.device)
 
-        # 2. Get metric aggregation specs from task handler
-        metric_specs = self._get_metric_specs()
+        # 2. Get metric aggregation specs
+        metric_specs = get_metric_specs_from_env(envs)
         
         # 3. Pre-allocate storage for metrics (all on GPU!)
         metrics_storage = {
-            "done_mask": torch.empty((num_steps, self.num_envs), dtype=torch.bool, device=self.device),
+            "done_mask": torch.empty((num_steps, num_envs), dtype=torch.bool, device=self.device),
         }
-        # Pre-allocate for all known metrics
         for metric_name in metric_specs.keys():
-            # Default to float32, will be overridden on first assignment if needed
-            metrics_storage[metric_name] = torch.empty((num_steps, self.num_envs), 
+            metrics_storage[metric_name] = torch.empty((num_steps, num_envs), 
                                                        dtype=torch.float32, 
                                                        device=self.device)
 
+        # 4. Optional: per-env step data for eval CSV
+        step_data_per_env = None
+        if record_step_data:
+            step_data_per_env = {i: [] for i in range(num_envs)}
+
+        # 5. Rollout loop
         for step in range(num_steps):
-            # Store current state before taking action
-            storage["obs"][step] = obs
+            # Store current observation (training only)
+            if collect_for_training:
+                storage["obs"][step] = obs
             
-            # Inference (Normalization is already in obs)
+            # Policy inference
             with torch.no_grad():
-                action, logprob, entropy, value = self.policy(obs=obs)
-            storage["vals"][step] = value.flatten()
-            storage["actions"][step] = action
-            storage["logprobs"][step] = logprob
-            storage["entropies"][step] = entropy
+                policy_output = policy_fn(obs)
+                # Handle different return formats
+                if isinstance(policy_output, tuple) and len(policy_output) == 4:
+                    action, logprob, entropy, value = policy_output
+                else:
+                    # Eval case: might only return action
+                    action = policy_output
+                    logprob = entropy = value = None
             
-            # Environment Step
-            next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action, self.envs)
+            # Store policy outputs (training only)
+            if collect_for_training and logprob is not None:
+                storage["vals"][step] = value.flatten()
+                storage["actions"][step] = action
+                storage["logprobs"][step] = logprob
+                storage["entropies"][step] = entropy
             
-            # Store rollout data
-            storage["rewards"][step] = reward
-            storage["bootstrap_mask"][step] = next_terminated if self.handle_timeout_termination else next_done
+            # Environment step
+            next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action, envs)
+            
+            # Store rollout data (training only)
+            if collect_for_training:
+                storage["rewards"][step] = reward
+                storage["bootstrap_mask"][step] = next_terminated if self.handle_timeout_termination else next_done
             
             # Extract metrics from final_info if available (episode completion)
             info_to_log = infos.get("final_info", infos)
@@ -405,34 +444,50 @@ class PPORunner:
             
             # Extract and store each metric (all on GPU)
             for metric_name in metric_specs.keys():
-                if metric_name in info_to_log:
-                    value = info_to_log[metric_name]
-                    
-                    # Handle "episode" dict from ManiSkill
-                    if metric_name in ["return", "episode_len", "success_once", "fail_once"]:
-                        episode_info = info_to_log.get("episode")
-                        if episode_info is not None and metric_name in episode_info:
-                            value = episode_info[metric_name]
-                        else:
-                            value = None
-                    
-                    # Store the value if it exists
-                    if value is not None:
-                        if isinstance(value, torch.Tensor):
-                            metrics_storage[metric_name][step] = value.float()
-                        else:
-                            metrics_storage[metric_name][step] = float(value)
+                value_to_store = 0.0  # Default
+                
+                # Handle "episode" dict from ManiSkill
+                if metric_name in ["return", "episode_len", "success_once", "fail_once", "reward"]:
+                    episode_info = info_to_log.get("episode")
+                    if episode_info is not None and metric_name in episode_info:
+                        value_to_store = episode_info[metric_name]
+                elif metric_name in info_to_log:
+                    value_to_store = info_to_log[metric_name]
+                
+                # Store the value
+                if value_to_store is not None:
+                    if isinstance(value_to_store, torch.Tensor):
+                        metrics_storage[metric_name][step] = value_to_store.float()
+                    else:
+                        metrics_storage[metric_name][step] = float(value_to_store)
                 else:
-                    # Fill with zeros if metric not present
                     metrics_storage[metric_name][step] = 0.0
+            
+            # Record per-env step data (eval CSV only)
+            if record_step_data:
+                for env_idx in range(num_envs):
+                    step_dict = {
+                        "step": step,
+                        "reward": reward[env_idx].item(),
+                    }
+                    
+                    # Add all metrics for this env
+                    for metric_name in metric_specs.keys():
+                        metric_value = metrics_storage[metric_name][step, env_idx]
+                        if isinstance(metric_value, torch.Tensor):
+                            step_dict[metric_name] = metric_value.item()
+                        else:
+                            step_dict[metric_name] = float(metric_value)
+                    
+                    step_data_per_env[env_idx].append(step_dict)
             
             # Update for next iteration
             obs = next_obs
         
-        # 4. Aggregate all metrics at once (GPU -> CPU transfer happens here)
-        self._aggregate_metrics(metrics_storage, metric_specs)
+        # 6. Aggregate all metrics at once (GPU -> CPU transfer happens here)
+        aggregate_metrics(metrics_storage, metric_specs, self.episode_metrics)
         
-        return next_obs, storage
+        return next_obs, storage, step_data_per_env
 
     def _update_metrics(self, reward, done, terminated, truncated, infos, 
                        episode_returns, avg_returns_list, reward_sum_dict,
@@ -529,8 +584,15 @@ class PPORunner:
             # Cudagraph marker
             torch.compiler.cudagraph_mark_step_begin()
             
-            # Rollout
-            next_obs, container = self._rollout(next_obs, self.num_steps)
+            # Rollout (training)
+            next_obs, container, _ = self._rollout(
+                next_obs, 
+                self.num_steps,
+                envs=self.envs,
+                policy_fn=lambda obs: self.policy(obs=obs),
+                collect_for_training=True,
+                record_step_data=False
+            )
             self.global_step += self.num_steps * self.num_envs
             
             # GAE calculation
@@ -721,6 +783,80 @@ class PPORunner:
         self.episode_metrics = {}
         
         return logs
+    
+    def _build_eval_logs(self) -> dict:
+        """Build evaluation logs from episode_metrics.
+        
+        Processes metrics collected during evaluation rollout and builds
+        wandb logs with 'eval/' prefix.
+        
+        Returns:
+            Dict of evaluation logs
+        """
+        logs = {}
+        
+        if not self.episode_metrics:
+            return logs
+        
+        # Special handling for key metrics
+        if "return" in self.episode_metrics and self.episode_metrics["return"]:
+            logs["eval/return"] = np.mean(self.episode_metrics["return"])
+        
+        if "success" in self.episode_metrics and self.episode_metrics["success"]:
+            logs["eval/success_rate"] = np.mean(self.episode_metrics["success"])
+        
+        if "fail" in self.episode_metrics and self.episode_metrics["fail"]:
+            logs["eval/fail_rate"] = np.mean(self.episode_metrics["fail"])
+        
+        # Add all other metrics with eval_reward/ prefix
+        for metric_name, values in self.episode_metrics.items():
+            if not values or metric_name in ["return", "success", "fail"]:
+                continue
+            
+            mean_value = np.mean(values)
+            
+            if metric_name in ["episode_len", "success_once", "fail_once"]:
+                logs[f"eval/{metric_name}"] = mean_value
+            else:
+                # Task-specific reward components
+                logs[f"eval_reward/{metric_name}"] = mean_value
+        
+        # Clear episode_metrics after logging
+        self.episode_metrics = {}
+        
+        return logs
+    
+    def _save_step_csvs(self, step_data_per_env: Dict[int, list]) -> None:
+        """Save per-environment step-by-step CSV files.
+        
+        Args:
+            step_data_per_env: Dict mapping environment index to list of step data dicts
+        """
+        import csv
+        from pathlib import Path
+        
+        video_dir_path = Path(self.video_dir)
+        split_base_dir = video_dir_path.parent / "split"
+        eval_folder = split_base_dir / f"eval{self.eval_count}"
+        eval_folder.mkdir(parents=True, exist_ok=True)
+        
+        # Save CSVs to split/evalN/envM/rewards.csv
+        for env_idx, steps in step_data_per_env.items():
+            if steps:  # Only save if we have data
+                env_folder = eval_folder / f"env{env_idx}"
+                env_folder.mkdir(parents=True, exist_ok=True)
+                csv_path = env_folder / "rewards.csv"
+                
+                # Write CSV
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=steps[0].keys())
+                    writer.writeheader()
+                    writer.writerows(steps)
+        
+        # Split videos asynchronously to split/evalN/envM/record.mp4
+        self._async_split_videos(eval_folder)
+        
+        self.eval_count += 1
 
     def _build_obs_stats_logs(self, container) -> dict:
         """Build observation statistics logs."""
@@ -786,7 +922,7 @@ class PPORunner:
             self._save_checkpoint(iteration)
 
     def _evaluate(self, agent=None):
-        """Run evaluation episodes.
+        """Run evaluation episodes using unified _rollout() method.
         
         Args:
             agent: Agent to use for evaluation. Defaults to self.agent.
@@ -794,26 +930,18 @@ class PPORunner:
         """
         if agent is None:
             agent = self.agent
-        print("Running evaluation...")
+        print("Running eval uation...")
         
-        # Optimization: Instead of recreating env, flush the video wrapper state
-        # directly in the existing eval_envs. save=False ignores pre-eval trash.
+        # Flush video wrapper state
         self.eval_envs.call("flush_video", save=False)
         
+        # Reset eval envs
         eval_obs, _ = self.eval_envs.reset()
-        eval_returns = []
-        eval_successes = []
-        eval_fails = []
-        episode_rewards = torch.zeros(self.cfg.training.num_eval_envs, device=self.device)
         
-        # Track reward components during eval
-        eval_reward_components = {}
-        self.num_eval_envs_eval = self.cfg.training.num_eval_envs
+        # Clear episode_metrics for eval (separate from training metrics)
+        self.episode_metrics = {}
         
-        # Structure: {env_idx: [{step, reward, component1, component2, ...}, ...]}
-        step_reward_data = {i: [] for i in range(self.cfg.training.num_eval_envs)}
-        
-        # Compute max_steps consistently: (base * multiplier) + hold_steps
+        # Compute max eval steps
         base = self.cfg.env.episode_steps.get("base", 296)
         multiplier = self.cfg.env.episode_steps.get("multiplier", 1.2)
         hold_steps = 0
@@ -822,50 +950,39 @@ class PPORunner:
         
         training_steps = int(base * multiplier) + hold_steps
         eval_multiplier = self.cfg.training.get("eval_step_multiplier", 1.0)
-        max_steps = int(training_steps * eval_multiplier)
+        max_steps = int(training_steps * eval_multiplier) + 2
         
-        # Add a small buffer for safety
-        max_steps += 2
+        # Deterministic policy for eval
+        def eval_policy_fn(obs):
+            action = agent.get_action(obs, deterministic=True)
+            return action, None, None, None  # (action, logprob, entropy, value)
         
-        eval_total_steps = 0
-        for step in range(max_steps):
-            # eval_obs is already flat and normalized due to wrappers
-            with torch.no_grad():
-                eval_action = agent.get_action(eval_obs, deterministic=True)
-            eval_obs, reward, terminated, truncated, eval_infos = self.eval_envs.step(eval_action)
-            eval_total_steps += self.cfg.training.num_eval_envs
+        # Check if we need to save CSVs
+        rec_cfg = self.cfg.get("recording", {})
+        save_csv = rec_cfg.get("save_step_csv", True)
+        
+        # Run evaluation rollout (reusing unified rollout method)
+        _, _, step_data_per_env = self._rollout(
+            eval_obs,
+            max_steps,
+            envs=self.eval_envs,
+            policy_fn=eval_policy_fn,
+            collect_for_training=False,  # Don't collect training data
+            record_step_data=save_csv    # Record per-env data if needed
+        )
+        
+        # Build and log evaluation metrics
+        eval_logs = self._build_eval_logs()
+        
+        if eval_logs:
+            print(f"  eval/return = {eval_logs.get('eval/return', 0):.4f}, "
+                  f"success_rate = {eval_logs.get('eval/success_rate', 0):.2%}, "
+                  f"fail_rate = {eval_logs.get('eval/fail_rate', 0):.2%}")
             
-            # Record per-step data for CSV (if enabled)
-            rec_cfg = self.cfg.get("recording", {})
-            if rec_cfg.get("save_step_csv", True):
-                reward_comps_per_env = get_reward_components_per_env(eval_infos)
-                s_field = get_info_field(eval_infos, "success")
-                f_field = get_info_field(eval_infos, "fail")
-                
-                for env_idx in range(self.num_eval_envs_eval): # Using local helper or num_eval_envs
-                    step_data = {"step": step, "reward": reward[env_idx].item()}
-                    
-                    # Add components
-                    if reward_comps_per_env is not None:
-                        for k, v in reward_comps_per_env.items():
-                            val = v[env_idx].item() if hasattr(v, 'item') else v[env_idx]
-                            step_data[k] = val if val is not None else 0.0
-                    
-                    step_data["success"] = extract_bool(s_field, env_idx)
-                    step_data["fail"] = extract_bool(f_field, env_idx)
-                    step_reward_data[env_idx].append(step_data)
-
-            # Vectorized metric updates
-            done = terminated | truncated
-            self._update_metrics(
-                reward, done, terminated, truncated, eval_infos,
-                episode_rewards, eval_returns, eval_reward_components,
-                is_training=False, successes_list=eval_successes, fails_list=eval_fails
-            )
-            
-            # Stop after collecting enough episodes
-            if len(eval_returns) >= self.cfg.training.num_eval_envs:
-                break
+            if self.cfg.wandb.enabled:
+                wandb.log(eval_logs, step=self.global_step)
+        
+        # Save videos and CSVs
         
         if eval_returns:
             mean_return = np.mean(eval_returns)
@@ -889,34 +1006,9 @@ class PPORunner:
                 wandb.log(eval_logs, step=self.global_step)
         
         if self.video_dir is not None:
-            # Finalize the evaluation video (saves to videos/*.mp4)
-            self.eval_envs.call("flush_video", save=True)
-            
-            # Split videos and save CSVs to new structure: split/evalN/envM/
-            import csv
-            from pathlib import Path
-            video_dir_path = Path(self.video_dir)
-            split_base_dir = video_dir_path.parent / "split"  # outputs/.../split/
-            eval_folder = split_base_dir / f"eval{self.eval_count}"  # split/eval0/
-            
-            # Create eval folder
-            eval_folder.mkdir(parents=True, exist_ok=True)
-            
-            # Save CSVs to split/evalN/envM/rewards.csv
-            for env_idx, steps in step_reward_data.items():
-                if steps:  # Only save if we have data
-                    env_folder = eval_folder / f"env{env_idx}"
-                    env_folder.mkdir(exist_ok=True)
-                    csv_path = env_folder / "rewards.csv"
-                    with open(csv_path, 'w', newline='') as f:
-                        writer = csv.DictWriter(f, fieldnames=steps[0].keys())
-                        writer.writeheader()
-                        writer.writerows(steps)
-            
-            # Split videos asynchronously to split/evalN/envM/record.mp4
-            self._async_split_videos(eval_folder)
-            
-            self.eval_count += 1  # Increment for next eval
+            # Save videos and CSVs
+            if save_csv and step_data_per_env:
+                self._save_step_csvs(step_data_per_env)
 
     def _evaluate_async(self, iteration):
         """Run evaluation asynchronously in a background thread.
