@@ -904,13 +904,15 @@ class PPORunner:
                 self.eval_thread.join()
             
             self.eval_agent.load_state_dict(self.agent.state_dict())
+            # Capture global_step at eval launch time (not when eval completes)
+            eval_global_step = self.global_step
             self.eval_thread = threading.Thread(
                 target=self._evaluate_async,
-                args=(iteration,),
+                args=(iteration, eval_global_step),
                 daemon=True
             )
             self.eval_thread.start()
-            print(f"  [Async] Eval launched in background (iteration {iteration})")
+            print(f"  [Async] Eval launched in background (iteration {iteration}, step {eval_global_step})")
         else:
             # Sync eval (blocking)
             eval_start = time.time()
@@ -921,15 +923,20 @@ class PPORunner:
                 wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
             self._save_checkpoint(iteration)
 
-    def _evaluate(self, agent=None):
+    def _evaluate(self, agent=None, log_step=None):
         """Run evaluation episodes using unified _rollout() method.
         
         Args:
             agent: Agent to use for evaluation. Defaults to self.agent.
                    For async eval, pass self.eval_agent to avoid race conditions.
+            log_step: Global step for wandb logging. Defaults to self.global_step.
+                     For async eval, should pass the captured step at eval launch time.
         """
         if agent is None:
             agent = self.agent
+        if log_step is None:
+            log_step = self.global_step
+            
         print("Running eval uation...")
         
         # Flush video wrapper state
@@ -980,7 +987,8 @@ class PPORunner:
                   f"fail_rate = {eval_logs.get('eval/fail_rate', 0):.2%}")
             
             if self.cfg.wandb.enabled:
-                wandb.log(eval_logs, step=self.global_step)
+                # Use log_step (captured at eval launch for async, or current for sync)
+                wandb.log(eval_logs, step=log_step)
         
         # Save videos and CSVs
         
@@ -1010,8 +1018,12 @@ class PPORunner:
             if save_csv and step_data_per_env:
                 self._save_step_csvs(step_data_per_env)
 
-    def _evaluate_async(self, iteration):
+    def _evaluate_async(self, iteration, eval_global_step):
         """Run evaluation asynchronously in a background thread.
+        
+        Args:
+            iteration: Training iteration number
+            eval_global_step: Global step captured at eval launch time (for accurate logging)
         
         Uses a separate CUDA stream and a dedicated eval_agent to avoid
         race conditions with the training agent.
@@ -1022,7 +1034,8 @@ class PPORunner:
         with torch.cuda.stream(self.eval_stream):
             # Use eval_agent (which has a copy of weights from when eval was triggered)
             # This is completely isolated from self.agent, no race conditions
-            self._evaluate(agent=self.eval_agent)
+            # Pass eval_global_step for accurate wandb logging
+            self._evaluate(agent=self.eval_agent, log_step=eval_global_step)
         
         # Sync this stream before logging (ensure eval is complete)
         self.eval_stream.synchronize()
@@ -1032,7 +1045,8 @@ class PPORunner:
         
         if self.cfg.wandb.enabled:
             # Log from background thread (wandb is thread-safe)
-            wandb.log({"charts/eval_time": eval_duration}, step=self.global_step)
+            # Use captured eval_global_step, not self.global_step (which has increased)
+            wandb.log({"charts/eval_time": eval_duration}, step=eval_global_step)
         
         # Save checkpoint after eval completes
         self._save_checkpoint(iteration)
