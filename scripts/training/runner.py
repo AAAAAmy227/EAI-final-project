@@ -387,8 +387,9 @@ class PPORunner:
                 "rewards": torch.empty((num_steps, num_envs), device=self.device),
             }, batch_size=[num_steps, num_envs], device=self.device)
 
-        # 2. Get metric aggregation specs
-        metric_specs = get_metric_specs_from_env(envs)
+        # 2. Get metric aggregation specs (mode-specific)
+        mode = "train" if collect_for_training else "eval"
+        metric_specs = get_metric_specs_from_env(envs, mode=mode)
         
         # 3. Pre-allocate storage for metrics (all on GPU!)
         metrics_storage = {

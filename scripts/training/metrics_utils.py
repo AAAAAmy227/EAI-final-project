@@ -4,11 +4,12 @@ import torch
 from typing import Dict
 
 
-def get_metric_specs_from_env(env) -> Dict[str, str]:
+def get_metric_specs_from_env(env, mode: str = "train") -> Dict[str, str]:
     """Get metric aggregation specifications from environment's task handler.
     
     Args:
         env: The environment (assumed to have a task_handler attribute)
+        mode: "train" or "eval" to get mode-specific metrics
         
     Returns:
         Dict mapping metric name to aggregation type ("mean" or "sum")
@@ -27,10 +28,10 @@ def get_metric_specs_from_env(env) -> Dict[str, str]:
     task_handler = base_env.task_handler
     task_handler_class = type(task_handler)
     
-    # Merge default and custom aggregations
+    # Merge default and custom aggregations (mode-specific)
     from scripts.tasks.base import BaseTaskHandler
     metric_specs = BaseTaskHandler.DEFAULT_METRIC_AGGREGATIONS.copy()
-    metric_specs.update(task_handler_class.get_custom_metric_aggregations())
+    metric_specs.update(task_handler_class.get_custom_metric_aggregations(mode=mode))
     
     return metric_specs
 

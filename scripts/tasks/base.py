@@ -33,16 +33,51 @@ class BaseTaskHandler(ABC):
         return self.env.device
     
     @classmethod
-    def get_custom_metric_aggregations(cls) -> Dict[str, str]:
+    def get_custom_metric_aggregations(cls, mode: str = "train") -> Dict[str, str]:
         """Return custom metric aggregation rules for this task.
         
-        Override this in subclasses to define task-specific metrics.
-        These will be merged with DEFAULT_METRIC_AGGREGATIONS.
+        Override _get_train_metrics() and/or _get_eval_metrics() in subclasses
+        to define mode-specific metrics.
+        
+        Args:
+            mode: "train" or "eval" to specify which metrics to return
         
         Returns:
             Dict mapping metric name to aggregation type ("mean" or "sum")
         """
+        if mode == "train":
+            return cls._get_train_metrics()
+        elif mode == "eval":
+            return cls._get_eval_metrics()
+        else:
+            # Fallback: merge both
+            metrics = cls._get_train_metrics().copy()
+            metrics.update(cls._get_eval_metrics())
+            return metrics
+    
+    @classmethod
+    def _get_train_metrics(cls) -> Dict[str, str]:
+        """Return training-specific metrics.
+        
+        Override in subclasses to define metrics collected during training.
+        By default, returns empty dict (only DEFAULT_METRIC_AGGREGATIONS used).
+        
+        Returns:
+            Dict mapping metric name to aggregation type
+        """
         return {}
+    
+    @classmethod
+    def _get_eval_metrics(cls) -> Dict[str, str]:
+        """Return evaluation-specific metrics.
+        
+        Override in subclasses to define metrics collected during evaluation.
+        By default, returns the same as training metrics.
+        
+        Returns:
+            Dict mapping metric name to aggregation type
+        """
+        return cls._get_train_metrics()
 
     @abstractmethod
     def evaluate(self) -> Dict[str, torch.Tensor]:

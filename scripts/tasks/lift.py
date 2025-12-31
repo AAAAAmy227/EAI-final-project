@@ -14,8 +14,8 @@ class LiftTaskHandler(BaseTaskHandler):
         self.task_success_rate: Optional[torch.Tensor] = None
     
     @classmethod
-    def get_custom_metric_aggregations(cls) -> Dict[str, str]:
-        """Define Lift task-specific metrics and their aggregations."""
+    def _get_train_metrics(cls) -> Dict[str, str]:
+        """Define Lift task metrics for training."""
         return {
             "grasp_reward": "mean",
             "lift_reward": "mean",
