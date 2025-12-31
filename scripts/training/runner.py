@@ -676,36 +676,15 @@ class PPORunner:
     def _build_reward_component_logs(self) -> dict:
         """Build reward component logs from episode_metrics and reset.
         
-        Computes mean for all collected episode metrics and prepares them
-        for wandb logging with appropriate prefixes.
+        Thin coordination method: uses pure function for computation,
+        manages state (avg_returns, episode_metrics clearing).
         """
-        logs = {}
+        from scripts.training.runner_utils import compute_reward_logs
         
-        if not self.episode_metrics:
-            return logs
+        # Pure computation
+        logs = compute_reward_logs(self.episode_metrics)
         
-        # Build logs for all metrics
-        for metric_name, values in self.episode_metrics.items():
-            if not values:
-                continue
-            
-            # Compute mean (works for both float metrics and boolean success/fail)
-            mean_value = np.mean(values)
-            
-            # Add appropriate prefix
-            if metric_name in ["success", "fail", "success_once", "fail_once"]:
-                # These are rates (mean of boolean values)
-                logs[f"rollout/{metric_name}_rate"] = mean_value
-            elif metric_name in ["return", "episode_len"]:
-                # Episode-level stats
-                logs[f"rollout/{metric_name}"] = mean_value
-            elif metric_name == "raw_reward":
-                logs[f"rollout/raw_reward_mean"] = mean_value
-            else:
-                # Task-specific reward components
-                logs[f"reward/{metric_name}"] = mean_value
-        
-        # Also update avg_returns for compatibility
+        # State management
         if "return" in self.episode_metrics and self.episode_metrics["return"]:
             self.avg_returns.extend(self.episode_metrics["return"])
         
@@ -717,41 +696,18 @@ class PPORunner:
     def _build_eval_logs(self) -> dict:
         """Build evaluation logs from episode_metrics.
         
-        Processes metrics collected during evaluation rollout and builds
-        wandb logs with 'eval/' prefix.
+        Thin coordination method: uses pure function for computation,
+        manages state (episode_metrics clearing).
         
         Returns:
             Dict of evaluation logs
         """
-        logs = {}
+        from scripts.training.runner_utils import compute_eval_logs
         
-        if not self.episode_metrics:
-            return logs
+        # Pure computation
+        logs = compute_eval_logs(self.episode_metrics)
         
-        # Special handling for key metrics
-        if "return" in self.episode_metrics and self.episode_metrics["return"]:
-            logs["eval/return"] = np.mean(self.episode_metrics["return"])
-        
-        if "success" in self.episode_metrics and self.episode_metrics["success"]:
-            logs["eval/success_rate"] = np.mean(self.episode_metrics["success"])
-        
-        if "fail" in self.episode_metrics and self.episode_metrics["fail"]:
-            logs["eval/fail_rate"] = np.mean(self.episode_metrics["fail"])
-        
-        # Add all other metrics with eval_reward/ prefix
-        for metric_name, values in self.episode_metrics.items():
-            if not values or metric_name in ["return", "success", "fail"]:
-                continue
-            
-            mean_value = np.mean(values)
-            
-            if metric_name in ["episode_len", "success_once", "fail_once"]:
-                logs[f"eval/{metric_name}"] = mean_value
-            else:
-                # Task-specific reward components
-                logs[f"eval_reward/{metric_name}"] = mean_value
-        
-        # Clear episode_metrics after logging
+        # State management: clear episode_metrics after logging
         self.episode_metrics = {}
         
         return logs
@@ -759,33 +715,28 @@ class PPORunner:
     def _save_step_csvs(self, step_data_per_env: Dict[int, list]) -> None:
         """Save per-environment step-by-step CSV files.
         
+        Uses dependency injection for paths and pure functions for I/O.
+        
         Args:
             step_data_per_env: Dict mapping environment index to list of step data dicts
         """
-        import csv
         from pathlib import Path
+        from scripts.training.runner_utils import build_csv_path, write_csv_file
         
-        video_dir_path = Path(self.video_dir)
-        split_base_dir = video_dir_path.parent / "split"
-        eval_folder = split_base_dir / f"eval{self.eval_count}"
-        eval_folder.mkdir(parents=True, exist_ok=True)
+        # Dependency injection: extract config from instance state
+        base_dir = Path(self.video_dir).parent
+        eval_name = f"eval{self.eval_count}"
         
-        # Save CSVs to split/evalN/envM/rewards.csv
+        # Save CSVs using pure functions
         for env_idx, steps in step_data_per_env.items():
-            if steps:  # Only save if we have data
-                env_folder = eval_folder / f"env{env_idx}"
-                env_folder.mkdir(parents=True, exist_ok=True)
-                csv_path = env_folder / "rewards.csv"
-                
-                # Write CSV
-                with open(csv_path, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=steps[0].keys())
-                    writer.writeheader()
-                    writer.writerows(steps)
+            csv_path = build_csv_path(base_dir, eval_name, env_idx)
+            write_csv_file(csv_path, steps)
         
-        # Split videos asynchronously to split/evalN/envM/record.mp4
+        # Split videos asynchronously
+        eval_folder = base_dir / "split" / eval_name
         self._async_split_videos(eval_folder)
         
+        # Update state
         self.eval_count += 1
 
     def _build_obs_stats_logs(self, container) -> dict:
