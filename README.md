@@ -76,6 +76,13 @@ eai-final-project/
 │   ├── envs/                  # 环境定义
 │   │   └── track1_env.py      # Track1Env（主环境）
 │   │
+│   ├── tests/                 # 单元测试
+│   │   ├── test_metrics.py        # Metrics 系统测试
+│   │   ├── test_task_handlers.py  # TaskHandler 测试
+│   │   ├── test_ppo_unit.py       # PPO 单元测试
+│   │   ├── test_ppo_integration.py # PPO 集成测试
+│   │   └── README.md              # 测试文档
+│   │
 │   ├── so101.py               # SO-101 双臂机器人定义
 │   ├── train.py               # 训练入口
 │   ├── view_env.py            # 环境可视化
@@ -104,10 +111,6 @@ eai-final-project/
 │
 ├── assets/                    # 资源文件
 │   └── screenshots/
-│
-├── tests/                     # 单元测试
-│   ├── test_metrics.py
-│   └── test_task_handlers.py
 │
 └── README.md                  # 本文件
 ```
@@ -320,11 +323,11 @@ wandb:
 
 ```bash
 # 运行所有测试
-uv run pytest tests/
+uv run pytest scripts/tests/ -v
 
 # 运行特定测试
-uv run pytest tests/test_metrics.py
-uv run pytest tests/test_task_handlers.py
+uv run pytest scripts/tests/test_metrics.py
+uv run pytest scripts/tests/test_task_handlers.py
 ```
 
 ## 开发指南
