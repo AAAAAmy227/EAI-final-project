@@ -287,7 +287,7 @@ class FlattenActionWrapper(gym.ActionWrapper):
         
         # Optimize action method
         if hasattr(torch, "compile"):
-            self.action = torch.compile(self.action, mode="reduce-overhead")
+            self.action = torch.compile(self.action)
             
         print(f"[FlattenActionWrapper] Flattened {len(self._leaf_info)} agents into {start_idx} action dims.")
 
@@ -349,7 +349,7 @@ class FlattenStateWrapper(gym.ObservationWrapper):
         # Compile the observation method for maximum performance
         # PyTorch will unroll the path-following loop during compilation
         if hasattr(torch, "compile"):
-            self.observation = torch.compile(self.observation, mode="reduce-overhead")
+            self.observation = torch.compile(self.observation)
         
         print(f"[FlattenStateWrapper] Flattened {len(self._leaf_paths)} leaf tensors into {total_dim} dimensions.")
     

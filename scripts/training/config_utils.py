@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Union
 import numpy as np
+import copy
 from omegaconf import DictConfig, OmegaConf
 
 @dataclass
@@ -102,7 +103,7 @@ class Track1Config:
         if isinstance(cfg, DictConfig):
             cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         else:
-            cfg_dict = cfg
+            cfg_dict = copy.deepcopy(cfg)
 
         # Initialize with defaults
         config = cls()
