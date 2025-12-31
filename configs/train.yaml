@@ -62,15 +62,15 @@ log_obs_stats: true  # Log mean/std of observation inputs (useful for monitoring
 async_eval: true     # Run evaluation in background thread (non-blocking)
 
 # Observation Normalization (like gym.wrappers.NormalizeObservation, but GPU-compatible)
-normalize_obs: true   # Whether to apply running normalization to observations (Welford's online algorithm)
-obs_clip: 10.0        # Clip normalized observations to [-clip, clip]
-# Note: Manual mean/std initialization from obs config is deprecated - RunningMeanStd adapts automatically
-init_obs_stats_from_config: false  # [DEPRECATED] No longer used with Welford's algorithm
-obs_stats_tau: 0.001  # EMA decay rate for additional obs statistics tracking (for monitoring only)
+normalize_obs: true    # Whether to apply running normalization to observations (Welford's online algorithm)
+obs_norm_epsilon: 1e-8 # Numerical stability epsilon for observation normalization
+obs_clip: 10.0         # Clip normalized observations to [-clip, clip]
 
 # Reward Normalization (like gym.wrappers.NormalizeReward, but GPU-compatible)
-normalize_reward: true  # Whether to apply running reward normalization (disable by default)
-reward_clip: 10.0       # Clip normalized rewards to [-clip, clip]
+normalize_reward: true       # Whether to apply running reward normalization
+reward_norm_gamma: 0.99      # Gamma for discounted return tracking (should match ppo.gamma)
+reward_norm_epsilon: 1e-8    # Numerical stability epsilon for reward normalization
+reward_clip: 10.0            # Clip normalized rewards to [-clip, clip]
 
 # Recording Configuration (for evaluation)
 recording:

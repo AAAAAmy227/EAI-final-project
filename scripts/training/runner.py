@@ -183,10 +183,6 @@ class PPORunner:
             self.eval_envs.update_rms = False
             self.eval_envs.rms = self.envs.rms # Shared instance!
         
-        # Optional: Initialize stats from config if requested
-        if self.cfg.get("init_obs_stats_from_config", False):
-            self._initialize_obs_stats_from_config()
-        
         print(f"Observation names for logging (count: {len(self.obs_names)})")
         
         # Reward mode for logging
@@ -280,46 +276,6 @@ class PPORunner:
         # Fallback to generic names
         print("Warning: FlattenActionWrapper not found, using generic action names")
         return [f"act_{i}" for i in range(self.n_act)]
-
-    def _initialize_obs_stats_from_config(self):
-        """Initialize obs RMS from environment config."""
-        from scripts.training.env_utils import NormalizeObservationGPU, find_wrapper
-        
-        # Find NormalizeObservationGPU wrapper
-        obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
-            
-        if obs_wrapper is None:
-            return
-
-        if "obs" not in self.cfg:
-            return
-        
-        obs_cfg = self.cfg.obs
-        print("Initializing observation statistics from config...")
-        
-        # Helper to find indices by name pattern
-        def get_indices(pattern):
-            return [i for i, name in enumerate(self.obs_names) if pattern in name]
-        
-        # Logic for common Track1 features
-        for key in obs_cfg.keys():
-            if hasattr(obs_cfg[key], "mean") and hasattr(obs_cfg[key], "std"):
-                idxs = get_indices(key)
-                if len(idxs) > 0:
-                    mean_val = torch.tensor(obs_cfg[key].mean, device=self.device)
-                    std_val = torch.tensor(obs_cfg[key].std, device=self.device)
-                    
-                    # Handle broadcasting if size matches
-                    if mean_val.numel() == len(idxs):
-                        obs_wrapper.rms.mean[idxs] = mean_val
-                        obs_wrapper.rms.var[idxs] = std_val ** 2
-                        print(f"  Initialized {key} stats at indices {idxs}")
-                    elif mean_val.numel() == 1:
-                        obs_wrapper.rms.mean[idxs] = mean_val
-                        obs_wrapper.rms.var[idxs] = std_val ** 2
-                        print(f"  Initialized {key} stats (scalar broadcast) at indices {idxs}")
-
-
 
     def _step_env(self, action, envs):
         """Execute environment step.

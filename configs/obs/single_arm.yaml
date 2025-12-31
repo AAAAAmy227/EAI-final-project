@@ -1,8 +1,6 @@
 # Observation normalization for single-arm tasks (Lift, Stack)
 # Derived from real trajectory analysis
 
-enabled: false
-
 # qpos normalization scale (divide by this value)
 # Default π works for most robots with joint limits ±π
 qpos_scale: 1.5
@@ -30,21 +28,6 @@ include_target_qpos: "relative"
 
 # Action bounds for relative target_qpos normalization
 action_bounds: ${control.action_bounds}
-
-# [DEPRECATED] Manual statistics below are no longer used for observation normalization.
-# The runner now uses Welford's online RunningMeanStd which adapts automatically.
-# These values are kept for reference only.
-
-# Absolute position statistics (from trajectory analysis, for reference only)
-tcp_pos:
-  mean: [0.479, 0.25, 0.05]
-  std: [0.083, 0.082, 0.05]
-  clip_with_std: 1.5  # unused
-
-red_cube_pos:
-  mean: [0.479, 0.25, 0.03]
-  std: [0.083, 0.082, 0.03]
-  clip_with_std: 1.5  # unused
 
 # Include is_grasped in observations (0/1 converted to -1/1)
 include_is_grasped: true
