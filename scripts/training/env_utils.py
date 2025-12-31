@@ -200,13 +200,13 @@ class SingleArmWrapper(gym.Wrapper):
         assert self.base_env.obs_mode == "state_dict", f"SingleArmWrapper requires state_dict mode, got {self.base_env.obs_mode}"
         
         # Verify the discovery
-        if self.right_arm_key not in self.env.single_action_space.spaces:
+        if self.right_arm_key not in self.env.get_wrapper_attr("single_action_space").spaces:
              raise KeyError(f"SingleArmWrapper: Discovered right_arm_key '{self.right_arm_key}' not found in action space. Available: {list(self.env.single_action_space.keys())}")
         
         # Keep Action Space as a Dict, but only with the right arm
         # This allows FlattenActionWrapper to handle the flattening and naming later
         self.single_action_space = gym.spaces.Dict({
-            self.right_arm_key: self.env.single_action_space[self.right_arm_key]
+            self.right_arm_key: self.env.get_wrapper_attr("single_action_space")[self.right_arm_key]
         })
         self.action_space = batch_space(self.single_action_space, n=self.base_env.num_envs)
         
@@ -265,8 +265,8 @@ class FlattenActionWrapper(gym.ActionWrapper):
         joint_names = SO101.JOINT_NAMES
         
         # Use sorted keys to ensure deterministic flattened ordering
-        for k in sorted(self.env.single_action_space.keys()):
-            space = self.env.single_action_space[k]
+        for k in sorted(self.env.get_wrapper_attr("single_action_space").keys()):
+            space = self.env.get_wrapper_attr("single_action_space")[k]
             dim = int(np.prod(space.shape))
             end_idx = start_idx + dim
             
