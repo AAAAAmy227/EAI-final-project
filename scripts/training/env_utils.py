@@ -95,9 +95,9 @@ class NormalizeObservationGPU(gym.Wrapper):
         self.clip = clip
         self.update_rms = True
         
-        # Determine observation shape
-        obs_shape = env.single_observation_space.shape
-        self.rms = RunningMeanStd(shape=obs_shape, device=self.device)
+        # Determine observation shape (using safe attribute access)
+        obs_space = env.get_wrapper_attr("single_observation_space")
+        self.rms = RunningMeanStd(shape=obs_space.shape, device=self.device)
     
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -125,7 +125,7 @@ class NormalizeRewardGPU(gym.Wrapper):
         self.clip = clip
         self.update_rms = True
         self.rms = RunningMeanStd(shape=(), device=self.device)
-        self.returns = torch.zeros(self.base_env.num_envs, device=self.device)
+        self.returns = torch.zeros(env.get_wrapper_attr("num_envs"), device=self.device)
 
     @property
     def base_env(self):
@@ -175,7 +175,8 @@ class SingleArmWrapper(gym.Wrapper):
         if right_arm_key is None or left_arm_key is None:
             # ManiSkill agent keys are usually sorted in the action space
             # For dual-arm Track1, keys are ['uid-0', 'uid-1']
-            all_keys = sorted(self.env.single_action_space.keys())
+            single_act_space = self.env.get_wrapper_attr("single_action_space")
+            all_keys = sorted(single_act_space.keys())
             
             if len(all_keys) >= 2:
                 # Standard dual-arm setup: left is index 0, right is index 1

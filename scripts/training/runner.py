@@ -4,6 +4,7 @@ Based on LeanRL/cleanrl ppo_continuous_action_torchcompile.py
 """
 import os
 os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
+os.environ["EXCLUDE_TD_FROM_PYTREE"] = "1"  # Silence CudaGraph compatibility warning
 
 import math
 import random
