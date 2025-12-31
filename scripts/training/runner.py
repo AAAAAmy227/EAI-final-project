@@ -827,30 +827,11 @@ class PPORunner:
                 wandb.log(eval_logs, step=log_step)
         
         # Save videos and CSVs
-        
-        if eval_returns:
-            mean_return = np.mean(eval_returns)
-            success_rate = np.mean(eval_successes) if eval_successes else 0.0
-            fail_rate = np.mean(eval_fails) if eval_fails else 0.0
-            print(f"  eval/return = {mean_return:.4f}, success_rate = {success_rate:.2%}, fail_rate = {fail_rate:.2%} (n={len(eval_returns)})")
-            
-            # Build log dict
-            eval_logs = {
-                "eval/return": mean_return,
-                "eval/success_rate": success_rate,
-                "eval/fail_rate": fail_rate,
-            }
-            
-            # Add eval reward components
-            if eval_total_steps > 0:
-                for name, total in eval_reward_components.items():
-                    eval_logs[f"eval_reward/{name}"] = total / eval_total_steps
-            
-            if self.cfg.wandb.enabled:
-                wandb.log(eval_logs, step=self.global_step)
-        
         if self.video_dir is not None:
-            # Save videos and CSVs
+            # 1. Save ManiSkill videos (mp4) and trajectories (h5)
+            self.eval_envs.call("flush_video", save=True)
+            
+            # 2. Save per-environment step-by-step CSVs
             if save_csv and step_data_per_env:
                 self._save_step_csvs(step_data_per_env)
 
