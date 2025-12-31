@@ -48,6 +48,9 @@ class Track1Env(BaseEnv):
         # 1. Initialize Configuration
         if cfg is not None:
             self.track1_cfg = Track1Config.from_hydra(cfg)
+            # Priority for explicit task parameter
+            if task is not None:
+                self.track1_cfg.task = task
         else:
             # Fallback for legacy explicit params
             self.track1_cfg = Track1Config(
@@ -202,6 +205,9 @@ class Track1Env(BaseEnv):
         elif task == "sort":
             from scripts.tasks.sort import SortTaskHandler
             return SortTaskHandler(self)
+        elif task == "static_grasp":
+            from scripts.tasks.static_grasp import StaticGraspTaskHandler
+            return StaticGraspTaskHandler(self)
         else:
             raise ValueError(f"Unknown task: {task}")
 
@@ -611,17 +617,21 @@ class Track1Env(BaseEnv):
 
     def _load_objects(self, options: dict):
         """Load task-specific objects."""
+        # Determine if cubes should be static based on task
+        is_static = (self.task == "static_grasp")
+        
         # Red cube is always 3cm
         self.red_cube = self._build_cube(
             name="red_cube",
             half_size=0.015,
             base_color=[1, 0, 0, 1],
-            default_pos=[0.497, 0.26, 0.015+ self.space_gap]
+            default_pos=[0.497, 0.26, 0.015+ self.space_gap],
+            is_static=is_static
         )
         
         # Green cube: only load for stack and sort tasks
-        if self.task == "lift":
-            # Lift task: no green cube needed
+        if self.task == "lift" or self.task == "static_grasp":
+            # Lift and static_grasp tasks: no green cube needed
             self.green_cube = None
         elif self.task == "sort":
             # Sort task: green cube is 1cm
@@ -640,11 +650,11 @@ class Track1Env(BaseEnv):
                 default_pos=[0.497, 0.30, 0.015+ self.space_gap]
             )
 
-    def _build_cube(self, name: str, half_size: float, base_color: list, default_pos: list) -> Actor:
+    def _build_cube(self, name: str, half_size: float, base_color: list, default_pos: list, is_static: bool = False) -> Actor:
         """Build a cube with optional domain randomization.
-        Delegates to scene_builder module.
+        Delegates to scene_builder.
         """
-        return scene_builder.build_cube(self, name, half_size, base_color, default_pos)
+        return scene_builder.build_cube(self, name, half_size, base_color, default_pos, is_static)
 
     def _apply_cube_physics(self, cube: Actor):
         """Apply physics properties to cube.
@@ -698,4 +708,11 @@ class Track1Env(BaseEnv):
     def compute_dense_reward(self, obs, action, info):
         """Compute dense reward (delegated to handler)."""
         return self.task_handler.compute_dense_reward(info, action)
+
+    def compute_normalized_dense_reward(self, obs, action, info):
+        """Compute normalized dense reward."""
+        reward = self.compute_dense_reward(obs, action, info)
+        # Apply reward_scale if available in config, else 1.0
+        scale = getattr(self.track1_cfg.reward, "reward_scale", 1.0)
+        return reward * scale
 

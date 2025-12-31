@@ -10,7 +10,7 @@ import numpy as np
 import sapien
 import sapien.render
 from mani_skill.utils.structs import Actor
-from sapien.physx import PhysxRigidBodyComponent
+from sapien.physx import PhysxRigidBodyComponent, PhysxRigidDynamicComponent
 
 
 def build_debug_markers(env):
@@ -299,8 +299,13 @@ def build_tape_lines(env):
         builder.build_static(name=spec["name"])
 
 
-def build_cube(env, name: str, half_size: float, base_color: list, default_pos: list) -> Actor:
-    """Build a cube with optional domain randomization."""
+
+def build_cube(env, name: str, half_size: float, base_color: list, default_pos: list, is_static: bool = False) -> Actor:
+    """Build a cube with optional domain randomization.
+    
+    Args:
+        is_static: If True, build as kinematic actor (pose controllable but immune to physics).
+    """
     if env.domain_randomization:
         cubes = []
         for i in range(env.num_envs):
@@ -322,49 +327,70 @@ def build_cube(env, name: str, half_size: float, base_color: list, default_pos: 
             )
             builder.initial_pose = sapien.Pose(p=default_pos)
             builder.set_scene_idxs([i])
+            
+            # Always build as standard actor and set kinematic if needed
             cube = builder.build(name=f"{name}_{i}")
+            if is_static:
+                for obj in cube._objs:
+                    dyn = obj.find_component_by_type(PhysxRigidDynamicComponent)
+                    if dyn: dyn.kinematic = True
+            
             env.scene.remove_from_state_dict_registry(cube)
             cubes.append(cube)
         
         merged = Actor.merge(cubes, name=name)
         env.scene.add_to_state_dict_registry(merged)
         
-        # Apply physical properties
-        apply_cube_physics(env, merged)
+        apply_cube_physics(env, merged, is_static=is_static)
         return merged
     else:
         builder = env.scene.create_actor_builder()
         builder.add_box_collision(half_size=[half_size] * 3)
         builder.add_box_visual(half_size=[half_size] * 3, material=base_color[:3])
         builder.initial_pose = sapien.Pose(p=default_pos)
-        cube = builder.build(name=name)
         
-        # Apply physical properties even in non-randomized mode
-        apply_cube_physics(env, cube)
+        cube = builder.build(name=name)
+        if is_static:
+            for obj in cube._objs:
+                dyn = obj.find_component_by_type(PhysxRigidDynamicComponent)
+                if dyn: dyn.kinematic = True
+                
+        apply_cube_physics(env, cube, is_static=is_static)
         return cube
 
 
-def apply_cube_physics(env, cube: Actor):
-    """Apply physics properties to cube (optionally randomized)."""
+def apply_cube_physics(env, cube: Actor, is_static: bool = False):
+    """Apply physics properties to cube (optionally randomized).
+    
+    Args:
+        is_static: If True, skip mass assignment (kinematic objects skip mass).
+                  Friction and restitution are always applied.
+    """
     p = env.cube_physics
-    for i, obj in enumerate(cube._objs):
-        rigid_body: PhysxRigidBodyComponent = obj.find_component_by_type(PhysxRigidBodyComponent)
+    for obj in cube._objs:
+        rigid_body = obj.find_component_by_type(PhysxRigidBodyComponent)
         if rigid_body is not None:
-            # Apply mass
-            if env.domain_randomization:
-                # Randomize mass around config value (+/- 50%)
-                rigid_body.mass = p["mass"] * np.random.uniform(0.5, 1.5)
-            else:
-                rigid_body.mass = p["mass"]
+            # 1. Apply Mass (only if not static/kinematic)
+            if not is_static:
+                # Use randomized or fixed mass
+                m = p["mass"] * np.random.uniform(0.5, 1.5) if env.domain_randomization else p["mass"]
+                rigid_body.set_mass(m)
             
-            # Apply friction and restitution
-            for shape in rigid_body.collision_shapes:
+            # 2. Apply Friction and Restitution to all shapes
+            for shape in rigid_body.get_collision_shapes():
                 if env.domain_randomization:
-                    # Randomize friction around config values (+/- 30%)
-                    shape.physical_material.static_friction = p["static_friction"] * np.random.uniform(0.7, 1.3)
-                    shape.physical_material.dynamic_friction = p["dynamic_friction"] * np.random.uniform(0.7, 1.3)
+                    sf = p["static_friction"] * np.random.uniform(0.8, 1.2)
+                    df = p["dynamic_friction"] * np.random.uniform(0.8, 1.2)
+                    res = p["restitution"] * np.random.uniform(0.8, 1.2)
                 else:
-                    shape.physical_material.static_friction = p["static_friction"]
-                    shape.physical_material.dynamic_friction = p["dynamic_friction"]
+                    sf = p["static_friction"]
+                    df = p["dynamic_friction"]
+                    res = p["restitution"]
                 
-                shape.physical_material.restitution = p.get("restitution", 0.0)
+                # Create a new material to avoid unintended sharing between parallel environments
+                mat = sapien.physx.PhysxMaterial(
+                    static_friction=sf,
+                    dynamic_friction=df,
+                    restitution=res
+                )
+                shape.physical_material = mat

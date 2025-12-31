@@ -521,7 +521,7 @@ def create_base_env(cfg: DictConfig, num_envs: int, for_eval: bool, env_kwargs: 
 def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_dir: str = None):
     """Apply wrappers in correct order."""
     # 1. Single-arm logic (filters actions/obs)
-    if cfg.env.task in ["lift", "stack"]:
+    if cfg.env.task in ["lift", "stack", "static_grasp"]:
         env = SingleArmWrapper(env)
     
     # 2. Spaces flattening (required for training runner)

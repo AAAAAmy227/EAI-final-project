@@ -151,15 +151,11 @@ class LiftTaskHandler(BaseTaskHandler):
             approach_reward = compute_approach_reward(distance, threshold, zero_point)
             approach2_reward = torch.zeros_like(approach_reward)
         else:
-            gripper_pos = self.env._get_gripper_pos()
-            distance = torch.norm(gripper_pos - cube_pos, dim=1)
+            # Fallback to tcp_pos as dual point mode is deprecated in Track1Env
+            tcp_pos = self.env.right_arm.tcp_pos
+            distance = torch.norm(tcp_pos - cube_pos, dim=1)
             approach_reward = compute_approach_reward(distance, threshold, zero_point)
-            
-            moving_jaw_pos = self.env._get_moving_jaw_pos()
-            distance2 = torch.norm(moving_jaw_pos - cube_pos, dim=1)
-            threshold2 = self.env.approach2_threshold
-            zero_point2 = self.env.approach2_zero_point
-            approach2_reward = compute_approach_reward(distance2, threshold2, zero_point2)
+            approach2_reward = torch.zeros_like(approach_reward)
         
         # 3. Horizontal displacement
         if self.initial_cube_xy is not None:

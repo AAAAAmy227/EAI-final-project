@@ -1,0 +1,84 @@
+# Configuration for static_grasp task - simplified debugging task
+# Copy of train.yaml but simplified for testing grasp detection
+
+defaults:
+  - _self_
+  - env: static_grasp
+  - reward: static_grasp
+  - control: single_arm
+  - obs: single_arm
+
+# Experiment settings
+exp_name: "static_grasp_debug"
+seed: 1
+device_id: 0
+
+# Logging
+wandb:
+  enabled: true
+  project: "Track1-Debug"
+  entity: null
+
+# Optimization flags
+compile: true
+cudagraphs: true
+anneal_lr: true
+
+# Training hyperparameters - reduced for faster debugging
+training:
+  total_timesteps: 100_000_000  # Less than default for quick testing
+  num_envs: 512                 # Fewer envs for easier monitoring
+  num_eval_envs: 8
+  num_steps: 400
+  num_eval_steps: null
+  eval_step_multiplier: 1.0
+  eval_freq: 10                 # More frequent eval for debugging
+
+# PPO hyperparameters
+ppo:
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  num_minibatches: 16           # Fewer minibatches for faster updates
+  update_epochs: 4
+  clip_coef: 0.2
+  clip_vloss: false
+  norm_adv: true
+  ent_coef: 0.001
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.015
+  reward_scale: 1.0
+  handle_timeout_termination: true
+  logstd_init: -1.0
+  logstd_min: -5.0
+  logstd_max: 0.0
+
+# Model saving
+save_model: true
+capture_video: true
+checkpoint: null
+
+# Debugging/Monitoring
+log_obs_stats: true
+async_eval: true
+
+# Observation Normalization
+normalize_obs: true
+obs_norm_epsilon: 1e-8
+obs_clip: 10.0
+
+# Reward Normalization
+normalize_reward: true
+reward_norm_gamma: 0.99
+reward_norm_epsilon: 1e-8
+reward_clip: 10.0
+
+# Recording Configuration
+recording:
+  save_video: true
+  save_trajectory: true
+  save_env_state: false
+  save_step_csv: true
+  info_on_video: true
+  video_fps: 30

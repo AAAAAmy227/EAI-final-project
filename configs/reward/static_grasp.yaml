@@ -1,0 +1,73 @@
+# Simplified reward configuration for StaticGrasp task
+# Focus: debugging grasp detection with minimal distractions
+
+reward_mode: "dense"
+reward_type: "parallel"
+
+# Simplified reward weights
+weights:
+  approach: 1.0        # Encourage robot to approach cube
+  grasp: 5.0           # Strong reward for grasping
+  hold_progress: 10.0  # Progressive reward for maintaining grasp over time
+  success: 50.0        # Large bonus for completing task (N seconds of continuous grasp)
+  action_rate: -0.1    # Small penalty for jerky motions
+
+reward_scale: 1.0
+
+# Approach reward parameters
+approach_curve: "tanh"
+approach_mode: "tcp_midpoint"
+approach_tanh_scale: 0.1      # Tanh scale for approach guidance
+approach_threshold: 0.05      # 5cm - used for logging stage transition
+
+# Grasp detection parameters
+grasp_min_force: 1.0         # Minimum contact force (N) to count as grasping
+grasp_max_angle: 110         # Maximum angle (degrees) between force and gripper direction
+
+# Success condition: continuous grasp for N seconds
+stable_hold_time: 3.0        # Required continuous grasp time (seconds)
+
+# Spawn bounds: where cube spawns (random position but static)
+spawn_bounds:
+  x_min: 0.45
+  x_max: 0.48
+  y_min: 0.23
+  y_max: 0.25
+
+# No fail bounds - task is simple, just timeout via max_episode_steps
+fail_bounds: null
+
+# Unused parameters from lift task (kept for compatibility)
+grasp_hold_max_steps: 0
+horizontal_displacement_threshold: 0.0
+lift_target: 0.05
+lift_max_height: 0.0
+gate_lift_with_grasp: false
+
+# Adaptive weights disabled for simpler debugging
+adaptive_grasp_weight:
+  enabled: false
+  alpha: 0.5
+  eps: 1e-8
+  max_weight: 100.0
+  tau: 0.0005
+
+adaptive_lift_weight:
+  enabled: false
+  alpha: 0.5
+  eps: 1e-8
+  max_weight: 100.0
+  tau: 0.0005
+
+adaptive_success_weight:
+  enabled: false
+  alpha: 0.5
+  eps: 1e-8
+  max_weight: 100.0
+  tau: 0.0005
+
+# Stage thresholds (unused in simple task)
+stages:
+  approach_threshold: 0.05
+  grasp_threshold: 0.03
+  lift_target: 0.05

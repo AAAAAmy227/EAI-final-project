@@ -79,6 +79,7 @@ class RewardConfig:
     gate_lift_with_grasp: bool = False
     adaptive_lift_weight: AdaptiveWeightConfig = field(default_factory=AdaptiveWeightConfig)
     adaptive_success_weight: AdaptiveWeightConfig = field(default_factory=AdaptiveWeightConfig)
+    reward_scale: float = 1.0
 
 @dataclass
 class Track1Config:
@@ -107,7 +108,10 @@ class Track1Config:
         config = cls()
         
         env_cfg = cfg_dict.get("env", {})
+        # Debug print to trace task identification
+        print(f"[Track1Config.from_hydra] Parsing task. env_cfg.get('task')={env_cfg.get('task')}, config.task (default)={config.task}")
         config.task = env_cfg.get("task", config.task)
+        print(f"[Track1Config.from_hydra] Resulting config.task={config.task}")
         config.domain_randomization = env_cfg.get("domain_randomization", config.domain_randomization)
         config.camera_mode = env_cfg.get("camera_mode", config.camera_mode)
         config.render_scale = env_cfg.get("render_scale", config.render_scale)
@@ -132,9 +136,8 @@ class Track1Config:
             obs_dict = cfg_dict["obs"]
             config.obs = ObsNormalizationConfig(**{k: v for k, v in obs_dict.items() if k in ObsNormalizationConfig.__dataclass_fields__})
 
-        if "reward" in cfg_dict:
-            reward_dict = cfg_dict["reward"]
-            
+        reward_dict = cfg_dict.get("reward", {})
+        if reward_dict:
             # Handle weights mapping (approach/reach, etc.)
             weights = reward_dict.get("weights", {}).copy()
             if "reach" in weights and "approach" not in weights:

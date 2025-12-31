@@ -1,0 +1,56 @@
+# Track1 environment configuration for static_grasp task
+env_id: "Track1-v0"
+task: "static_grasp"
+camera_mode: "direct_pinhole"
+obs_mode: "state_dict"
+include_state: true
+domain_randomization: false  # Disable for simpler debugging
+
+# Robot URDF path
+robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
+
+# Simulation frequency
+sim_freq: 240
+control_freq: 30
+
+# Max episode steps for static_grasp task
+# Shorter than lift since success is just grasping, not lifting
+episode_steps:
+  base: 300         # 10 seconds at 30Hz
+  multiplier: 1.0   # No buffer needed for simple task
+
+# Camera extrinsic parameters (same as lift)
+camera:
+  extrinsic:
+    - [-0.999924, 0.012300, 0.000780, 0.319304]
+    - [0.012322, 0.999045, 0.041926, 0.269718]
+    - [-0.000264, 0.041932, -0.999120, 0.386226]
+    - [0.0, 0.0, 0.0, 1.0]
+  undistort_alpha: 0.25
+
+# Cube physics - UNUSED since cube is static/kinematic
+# But kept for compatibility
+cube_physics:
+  mass: 0.1
+  static_friction: 0.3
+  dynamic_friction: 0.3
+  restitution: 0.0
+
+# Table physics
+table_physics:
+  static_friction: 0.3
+  dynamic_friction: 0.3
+  restitution: 0.0
+
+# Gripper physics
+gripper_physics:
+  static_friction: 2.0
+  dynamic_friction: 2.0
+  restitution: 0.0
+  patch_radius: 0.1
+  min_patch_radius: 0.1
+
+# Physics solver
+solver:
+  position_iterations: 25
+  velocity_iterations: 1
