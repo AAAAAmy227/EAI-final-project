@@ -177,12 +177,14 @@ class PPORunner:
             )
             print(f"Running Observation Normalization enabled (clip={self.obs_clip})")
             
-            # Wrap Eval Envs: shared stats, but don't update them during eval
+            # Wrap Eval Envs with separate rms instance
+            # Stats will be synced from training via _sync_eval_obs_stats() before eval
+            # This avoids race conditions during async eval (shared instance would be updated by training)
             self.eval_envs = NormalizeObservationGPU(
                 self.eval_envs, device=self.device, clip=self.obs_clip
             )
-            self.eval_envs.update_rms = False
-            self.eval_envs.rms = self.envs.rms # Shared instance!
+            self.eval_envs.update_rms = False  # Never update stats during eval
+
         
         print(f"Observation names for logging (count: {len(self.obs_names)})")
         
@@ -733,6 +735,47 @@ class PPORunner:
         
         return logs
 
+    def _snapshot_normalization_stats(self) -> dict:
+        """Capture a snapshot of normalization wrapper statistics.
+        
+        This is used for async eval to avoid race conditions with training updates.
+        Returns a dict that can be passed to _save_checkpoint.
+        """
+        from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
+        
+        snapshot = {}
+        
+        obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
+        if obs_wrapper is not None:
+            snapshot["obs_rms_mean"] = obs_wrapper.rms.mean.clone()
+            snapshot["obs_rms_var"] = obs_wrapper.rms.var.clone()
+            snapshot["obs_rms_count"] = obs_wrapper.rms.count
+        
+        reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
+        if reward_wrapper is not None:
+            snapshot["return_rms_mean"] = reward_wrapper.rms.mean.clone()
+            snapshot["return_rms_var"] = reward_wrapper.rms.var.clone()
+            snapshot["return_rms_count"] = reward_wrapper.rms.count
+        
+        return snapshot
+        
+    def _sync_eval_obs_stats(self):
+        """Sync observation normalization stats from training to eval envs.
+        
+        Called before eval to ensure eval uses the current training stats
+        without sharing the same instance (which would cause race conditions).
+        """
+        from scripts.training.env_utils import NormalizeObservationGPU, find_wrapper
+        
+        train_obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
+        eval_obs_wrapper = find_wrapper(self.eval_envs, NormalizeObservationGPU)
+        
+        if train_obs_wrapper is not None and eval_obs_wrapper is not None:
+            # Copy stats instead of sharing reference
+            eval_obs_wrapper.rms.mean.copy_(train_obs_wrapper.rms.mean)
+            eval_obs_wrapper.rms.var.copy_(train_obs_wrapper.rms.var)
+            eval_obs_wrapper.rms.count = train_obs_wrapper.rms.count
+
     def _handle_evaluation(self, iteration: int):
         """Handle evaluation scheduling (sync or async)."""
         if self.async_eval:
@@ -743,15 +786,24 @@ class PPORunner:
             self.eval_agent.load_state_dict(self.agent.state_dict())
             # Capture global_step at eval launch time (not when eval completes)
             eval_global_step = self.global_step
+            
+            # Snapshot normalization stats BEFORE starting async eval
+            # This avoids race condition with training updating stats concurrently
+            norm_snapshot = self._snapshot_normalization_stats()
+            
+            # Sync eval env obs stats from training stats
+            self._sync_eval_obs_stats()
+            
             self.eval_thread = threading.Thread(
                 target=self._evaluate_async,
-                args=(iteration, eval_global_step),
+                args=(iteration, eval_global_step, norm_snapshot),
                 daemon=True
             )
             self.eval_thread.start()
             print(f"  [Async] Eval launched in background (iteration {iteration}, step {eval_global_step})")
         else:
             # Sync eval (blocking)
+            self._sync_eval_obs_stats()  # Sync latest training stats to eval env
             eval_start = time.time()
             self._evaluate()
             eval_duration = time.time() - eval_start
@@ -836,12 +888,13 @@ class PPORunner:
             if save_csv and step_data_per_env:
                 self._save_step_csvs(step_data_per_env)
 
-    def _evaluate_async(self, iteration, eval_global_step):
+    def _evaluate_async(self, iteration, eval_global_step, norm_snapshot=None):
         """Run evaluation asynchronously in a background thread.
         
         Args:
             iteration: Training iteration number
             eval_global_step: Global step captured at eval launch time (for accurate logging)
+            norm_snapshot: Snapshot of normalization stats captured at eval launch time
         
         Uses a separate CUDA stream and a dedicated eval_agent to avoid
         race conditions with the training agent.
@@ -867,37 +920,49 @@ class PPORunner:
             eval_time_logs = {"charts/eval_time": eval_duration, "global_step": self.global_step}
             wandb.log(eval_time_logs)
         
-        # Save checkpoint after eval completes
-        self._save_checkpoint(iteration)
+        # Save checkpoint after eval completes, using the snapshot from eval launch time
+        self._save_checkpoint(iteration, norm_snapshot=norm_snapshot)
 
-    def _save_checkpoint(self, iteration):
-        """Save model checkpoint."""
+    def _save_checkpoint(self, iteration, norm_snapshot=None):
+        """Save model checkpoint.
+        
+        Args:
+            iteration: Training iteration number
+            norm_snapshot: Optional pre-captured normalization stats. If provided,
+                          uses these instead of reading from live wrappers.
+                          This is essential for async eval to avoid race conditions.
+        """
         if self.cfg.save_model:
-            from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
             output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
             model_path = output_dir / f"iteration_{iteration}.pt"
             
-            # Find wrappers to extract stats
-            obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
-            reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
-
             state = {
                 "agent": self.agent.state_dict(),
             }
             
-            if obs_wrapper is not None:
-                state.update({
-                    "obs_rms_mean": obs_wrapper.rms.mean,
-                    "obs_rms_var": obs_wrapper.rms.var,
-                    "obs_rms_count": obs_wrapper.rms.count,
-                })
-            
-            if reward_wrapper is not None:
-                state.update({
-                    "return_rms_mean": reward_wrapper.rms.mean,
-                    "return_rms_var": reward_wrapper.rms.var,
-                    "return_rms_count": reward_wrapper.rms.count,
-                })
+            if norm_snapshot is not None:
+                # Use pre-captured snapshot (from async eval)
+                state.update(norm_snapshot)
+            else:
+                # Read from live wrappers (for sync eval)
+                from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
+                
+                obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
+                reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
+                
+                if obs_wrapper is not None:
+                    state.update({
+                        "obs_rms_mean": obs_wrapper.rms.mean,
+                        "obs_rms_var": obs_wrapper.rms.var,
+                        "obs_rms_count": obs_wrapper.rms.count,
+                    })
+                
+                if reward_wrapper is not None:
+                    state.update({
+                        "return_rms_mean": reward_wrapper.rms.mean,
+                        "return_rms_var": reward_wrapper.rms.var,
+                        "return_rms_count": reward_wrapper.rms.count,
+                    })
 
             torch.save(state, model_path)
             torch.save(state, output_dir / "latest.pt")

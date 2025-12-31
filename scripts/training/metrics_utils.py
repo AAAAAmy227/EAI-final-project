@@ -14,10 +14,8 @@ def get_metric_specs_from_env(env, mode: str = "train") -> Dict[str, str]:
     Returns:
         Dict mapping metric name to aggregation type ("mean" or "sum")
     """
-    # Try to get task handler from the base environment
-    base_env = env
-    while hasattr(base_env, 'env'):
-        base_env = base_env.env
+    # Get base environment using .unwrapped (works with all wrapper types)
+    base_env = env.unwrapped
     
     # Get task handler
     if not hasattr(base_env, 'task_handler'):

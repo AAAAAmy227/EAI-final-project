@@ -52,7 +52,9 @@ def compute_reward_logs(episode_metrics: Dict[str, list]) -> Dict[str, float]:
             logs[f"rollout/raw_reward_mean"] = mean_value
         else:
             # Task-specific reward components
-            logs[f"reward/{metric_name}"] = mean_value
+            # Avoid double prefixing if the metric_name already has it
+            full_key = metric_name if metric_name.startswith("reward/") else f"reward/{metric_name}"
+            logs[full_key] = mean_value
     
     return logs
 
@@ -101,7 +103,11 @@ def compute_eval_logs(episode_metrics: Dict[str, list]) -> Dict[str, float]:
             logs[f"eval/{metric_name}"] = mean_value
         else:
             # Task-specific reward components
-            logs[f"eval_reward/{metric_name}"] = mean_value
+            full_key = metric_name if metric_name.startswith("eval_reward/") else f"eval_reward/{metric_name}"
+            # Also handle keys that come in as "reward/xxx" by changing them to "eval_reward/xxx"
+            if full_key.startswith("reward/"):
+                full_key = "eval_reward/" + full_key[len("reward/"):]
+            logs[full_key] = mean_value
     
     return logs
 

@@ -2,11 +2,11 @@
 # Copy of train.yaml but simplified for testing grasp detection
 
 defaults:
-  - _self_
   - env: static_grasp
   - reward: static_grasp
   - control: single_arm
   - obs: single_arm
+  - _self_
 
 # Experiment settings
 exp_name: "static_grasp_debug"
@@ -16,7 +16,7 @@ device_id: 0
 # Logging
 wandb:
   enabled: true
-  project: "Track1-Debug"
+  project: "Track1-Grsap-Debug"
   entity: null
 
 # Optimization flags
@@ -27,12 +27,12 @@ anneal_lr: true
 # Training hyperparameters - reduced for faster debugging
 training:
   total_timesteps: 100_000_000  # Less than default for quick testing
-  num_envs: 512                 # Fewer envs for easier monitoring
+  num_envs: 2048                 # Fewer envs for easier monitoring
   num_eval_envs: 8
-  num_steps: 400
+  num_steps: 32
   num_eval_steps: null
   eval_step_multiplier: 1.0
-  eval_freq: 10                 # More frequent eval for debugging
+  eval_freq: 32                 # More frequent eval for debugging
 
 # PPO hyperparameters
 ppo:
@@ -40,7 +40,7 @@ ppo:
   gamma: 0.99
   gae_lambda: 0.95
   num_minibatches: 16           # Fewer minibatches for faster updates
-  update_epochs: 4
+  update_epochs: 5
   clip_coef: 0.2
   clip_vloss: false
   norm_adv: true
@@ -70,7 +70,7 @@ obs_clip: 10.0
 
 # Reward Normalization
 normalize_reward: true
-reward_norm_gamma: 0.99
+reward_norm_gamma: $(ppo.gamma)
 reward_norm_epsilon: 1e-8
 reward_clip: 10.0
 
