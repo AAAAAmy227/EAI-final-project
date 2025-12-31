@@ -332,16 +332,17 @@ class PPORunner:
 
 
 
-    def _step_env(self, action):
+    def _step_env(self, action, envs):
         """Execute environment step.
         
         Returns:
             next_obs, reward, terminated, truncated, done, info
             where done = terminated | truncated (for episode boundary tracking)
         """
-        next_obs, reward, terminations, truncations, info = self.envs.step(action)
+        next_obs, reward, terminations, truncations, info = envs.step(action)
         done = terminations | truncations
         return next_obs, reward, terminations, truncations, done, info
+
 
     def _rollout(self, obs, num_steps):
         """Collect trajectories with pre-allocated storage.
@@ -356,6 +357,7 @@ class PPORunner:
             "vals": torch.empty((num_steps, self.num_envs), device=self.device),
             "actions": torch.empty((num_steps, self.num_envs, self.n_act), device=self.device),
             "logprobs": torch.empty((num_steps, self.num_envs), device=self.device),
+            "entropies": torch.empty((num_steps, self.num_envs), device=self.device),
             "rewards": torch.empty((num_steps, self.num_envs), device=self.device),
         }, batch_size=[num_steps, self.num_envs], device=self.device)
 
@@ -365,31 +367,36 @@ class PPORunner:
             
             # Inference (Normalization is already in obs)
             with torch.no_grad():
-                action, logprob, _, value = self.policy(obs=obs)
+                action, logprob, entropy, value = self.policy(obs=obs)
             storage["vals"][step] = value.flatten()
             storage["actions"][step] = action
             storage["logprobs"][step] = logprob
+            storage["entropies"][step] = entropy
             
             # Environment Step
-            next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action)
+            next_obs, reward, next_terminated, next_truncated, next_done, infos = self._step_env(action, self.envs)
             
             # 3. Store result of the step at current index (POST-step storage)
             # This makes storage["bootstrap_mask"][step] the status of next_obs (s_{t+1})
             storage["rewards"][step] = reward
             storage["bootstrap_mask"][step] = next_terminated if self.handle_timeout_termination else next_done
             
-            # Update metrics (reward components, returns, etc.)
-            self._update_metrics(
-                reward, next_done, next_terminated, next_truncated, infos,
-                self.episode_returns, self.avg_returns, self.reward_component_sum,
-                is_training=True
-            )
+            # # Update metrics (reward components, returns, etc.)
+            # self._update_metrics(
+            #     reward, next_done, next_terminated, next_truncated, infos,
+            #     self.episode_returns, self.avg_returns, self.reward_component_sum,
+            #     is_training=True
+            # )
+
+            
+            if "final_info" in infos:
+                infos = infos["final_info"]
+            # "raw reward" by reward wrapper, and returns of env evaluate()
 
             # Update for next iteration
             obs = next_obs
         
-        storage["rewards"] *= self.cfg.ppo.reward_scale
-        return obs, storage
+        return next_obs, storage
 
     def _update_metrics(self, reward, done, terminated, truncated, infos, 
                        episode_returns, avg_returns_list, reward_sum_dict,
@@ -488,7 +495,7 @@ class PPORunner:
             
             # Rollout
             next_obs, container = self._rollout(next_obs, self.num_steps)
-            self.global_step += container.numel()
+            self.global_step += self.num_steps * self.num_envs
             
             # GAE calculation
             container = self._compute_gae(container, next_obs)
