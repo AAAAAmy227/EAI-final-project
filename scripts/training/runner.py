@@ -624,7 +624,8 @@ class PPORunner:
         
         # Log to WandB
         if self.cfg.wandb.enabled:
-            wandb.log(logs, step=self.global_step)
+            logs["global_step"] = self.global_step
+            wandb.log(logs)
         
         return logs
 
@@ -776,7 +777,7 @@ class PPORunner:
         print("Running eval uation...")
         
         # Flush video wrapper state
-        self.eval_envs.call("flush_video", save=False)
+        self.eval_envs.get_wrapper_attr("call")("flush_video", save=False)
         
         # Reset eval envs
         eval_obs, _ = self.eval_envs.reset()
@@ -823,13 +824,13 @@ class PPORunner:
                   f"fail_rate = {eval_logs.get('eval/fail_rate', 0):.2%}")
             
             if self.cfg.wandb.enabled:
-                # Use log_step (captured at eval launch for async, or current for sync)
-                wandb.log(eval_logs, step=log_step)
+                # Use log_step (the step eval was triggered at) for correct X-axis placement
+                eval_logs["global_step"] = log_step
+                wandb.log(eval_logs)
         
-        # Save videos and CSVs
         if self.video_dir is not None:
             # 1. Save ManiSkill videos (mp4) and trajectories (h5)
-            self.eval_envs.call("flush_video", save=True)
+            self.eval_envs.get_wrapper_attr("call")("flush_video", save=True)
             
             # 2. Save per-environment step-by-step CSVs
             if save_csv and step_data_per_env:
@@ -862,8 +863,9 @@ class PPORunner:
         
         if self.cfg.wandb.enabled:
             # Log from background thread (wandb is thread-safe)
-            # Use captured eval_global_step, not self.global_step (which has increased)
-            wandb.log({"charts/eval_time": eval_duration}, step=eval_global_step)
+            # Use self.global_step for time-series charts
+            eval_time_logs = {"charts/eval_time": eval_duration, "global_step": self.global_step}
+            wandb.log(eval_time_logs)
         
         # Save checkpoint after eval completes
         self._save_checkpoint(iteration)

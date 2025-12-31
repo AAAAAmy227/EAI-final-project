@@ -56,6 +56,13 @@ def main(cfg: DictConfig):
             tags=[cfg.env.task, cfg.reward.reward_mode if "reward" in cfg else "sparse", cfg.env.obs_mode],
             notes=f"Git commit: {git_commit}"
         )
+        # Define custom x-axis for eval and rollout metrics
+        wandb.define_metric("global_step")
+        wandb.define_metric("eval/*", step_metric="global_step")
+        wandb.define_metric("reward/*", step_metric="global_step")
+        wandb.define_metric("rollout/*", step_metric="global_step")
+        wandb.define_metric("losses/*", step_metric="global_step")
+        wandb.define_metric("charts/*", step_metric="global_step")
         wandb.config.update({"output_dir": str(output_dir)})
 
     # Initialize Runner

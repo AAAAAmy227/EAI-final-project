@@ -22,7 +22,11 @@ class StaticGraspTaskHandler(BaseTaskHandler):
     def _get_train_metrics(cls) -> Dict[str, str]:
         """Define StaticGrasp task metrics for training."""
         return {
-            "grasp_reward": "mean",
+            "reward/approach": "mean",
+            "reward/grasp": "mean",
+            "reward/hold_progress": "mean",
+            "reward/success_bonus": "mean",
+            "reward/action_rate": "mean",
             "grasp_success": "mean",
             "grasp_hold_steps": "mean",
         }
@@ -169,24 +173,19 @@ class StaticGraspTaskHandler(BaseTaskHandler):
             w.get("action_rate", -0.1) * action_rate
         )
         
-        # Store reward components for logging
-        info["reward_components"] = {
-            "approach": (w.get("approach", 1.0) * approach_reward).mean(),
-            "grasp": (w.get("grasp", 5.0) * grasp_reward).mean(),
-            "hold_progress": (w.get("hold_progress", 10.0) * hold_progress).mean(),
-            "success": (w.get("success", 50.0) * success_bonus).mean(),
-            "action_rate": (w.get("action_rate", -0.1) * action_rate).mean(),
+        # Store reward components (flattened for Runner)
+        reward_info = {
+            "reward/approach": (w.get("approach", 1.0) * approach_reward),
+            "reward/grasp": (w.get("grasp", 5.0) * grasp_reward),
+            "reward/hold_progress": (w.get("hold_progress", 10.0) * hold_progress),
+            "reward/success_bonus": (w.get("success", 50.0) * success_bonus),
+            "reward/action_rate": (w.get("action_rate", -0.1) * action_rate),
         }
+        info.update(reward_info)
         
         # Per-env components for detailed eval logging
         if self.env.eval_mode:
-            info["reward_components_per_env"] = {
-                "approach": w.get("approach", 1.0) * approach_reward,
-                "grasp": w.get("grasp", 5.0) * grasp_reward,
-                "hold_progress": w.get("hold_progress", 10.0) * hold_progress,
-                "success": w.get("success", 50.0) * success_bonus,
-                "action_rate": w.get("action_rate", -0.1) * action_rate,
-            }
+            info["reward_components_per_env"] = reward_info
         
         # Logging counters
         info["success_count"] = success.sum()
