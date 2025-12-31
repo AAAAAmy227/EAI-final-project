@@ -181,6 +181,7 @@ class Track1Env(BaseEnv):
         )
         new_uid = ConfiguredSO101.uid
         
+        # 6. Finalize environment setup
         # Ensure super().__init__ uses the configured class UID
         if isinstance(robot_uids, str):
             if robot_uids == "so101": robot_uids = new_uid
@@ -190,6 +191,10 @@ class Track1Env(BaseEnv):
         self.render_scale = cfg.render_scale
         self.grid_bounds = {}
         self._setup_camera_processing_maps()
+
+        # Update SUPPORTED_ROBOTS dynamically to include our new task-specific UID
+        # This silences the ManiSkill warning while maintaining isolation
+        self.SUPPORTED_ROBOTS = [new_uid, (new_uid, new_uid)]
         
         self.task_handler = self._create_task_handler(self.task)
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
