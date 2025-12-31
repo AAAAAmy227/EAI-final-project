@@ -64,8 +64,7 @@ eai-final-project/
 │   │   ├── agent.py           # Actor-Critic 网络
 │   │   ├── ppo_utils.py       # PPO 算法实现（GAE, 更新）
 │   │   ├── env_utils.py       # 环境工具（wrappers, make_env）
-│   │   ├── metrics_utils.py   # Metrics 收集和聚合
-│   │   └── info_utils.py      # Info 字段提取（待废弃）
+│   │   └── metrics_utils.py   # Metrics 收集和聚合
 │   │
 │   ├── tasks/                 # 任务定义
 │   │   ├── base.py            # BaseTaskHandler（基类）

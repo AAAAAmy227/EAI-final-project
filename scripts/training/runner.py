@@ -33,11 +33,6 @@ from tensordict.nn import CudaGraphModule
 from scripts.training.agent import Agent
 from scripts.training.env_utils import make_env
 from scripts.training.ppo_utils import optimized_gae, make_ppo_update_fn
-from scripts.training.info_utils import (
-    get_reward_components, get_reward_components_per_env, 
-    get_info_field, extract_scalar, extract_bool,
-    accumulate_reward_components, accumulate_reward_components_gpu
-)
 from scripts.training.metrics_utils import get_metric_specs_from_env, aggregate_metrics
 
 class PPORunner:
@@ -489,72 +484,6 @@ class PPORunner:
         aggregate_metrics(metrics_storage, metric_specs, self.episode_metrics)
         
         return next_obs, storage, step_data_per_env
-
-    def _update_metrics(self, reward, done, terminated, truncated, infos, 
-                       episode_returns, avg_returns_list, reward_sum_dict,
-                       is_training=True, successes_list=None, fails_list=None):
-        """Vectorized update of metrics during rollout or evaluation.
-        
-        Performance Note:
-            This function is optimized to keep operations on GPU as much as possible.
-            - Reward components are accumulated on GPU (training & eval).
-            - Episode returns are sliced/masked on GPU and transferred to CPU in one batch.
-            - Success/Fail flags are masked on GPU and transferred to CPU in one batch.
-        """
-        # 1. Accumulate RAW reward (on GPU)
-        raw_reward = get_info_field(infos, "raw_reward")
-        episode_returns += raw_reward
-        
-        # 2. Record reward components (Always GPU efficiently)
-        reward_comps = get_reward_components(infos)
-        # Use GPU accumulation for both training and eval to avoid .item() calls
-        count_inc = accumulate_reward_components_gpu(reward_sum_dict, reward_comps, self.device)
-        
-        if is_training:
-            self.reward_component_count += count_inc
-            
-            # Success/Fail counts (GPU accumulation)
-            s_val = get_info_field(infos, "success_count")
-            if s_val is not None: 
-                self.success_count = self.success_count + s_val
-            f_val = get_info_field(infos, "fail_count")
-            if f_val is not None: 
-                self.fail_count = self.fail_count + f_val
-            
-            # Terminated/truncated counts (GPU accumulation)
-            self.terminated_count = self.terminated_count + terminated.sum()
-            self.truncated_count = self.truncated_count + (done & ~terminated).sum()
-        
-        # 3. Episode completion handling
-        if done.any():
-            # Reset returns for completed episodes (GPU-only operation)
-            completed_mask = done
-            
-            # Efficient returns collection (Batch transfer to CPU)
-            completed_returns = episode_returns[completed_mask].cpu().tolist()
-            avg_returns_list.extend(completed_returns)
-            
-            # Reset returns for completed episodes
-            episode_returns[completed_mask] = 0.0
-            
-            # Collect success/fail status (Eval optimized)
-            if not is_training:
-                if successes_list is not None:
-                    s_field = get_info_field(infos, "success")
-                    if s_field is not None:
-                        # Vectorized extraction: mask -> cpu -> list
-                        vals = s_field[completed_mask]
-                        if hasattr(vals, "cpu"):
-                            vals = vals.cpu().tolist()
-                        successes_list.extend([bool(x) for x in vals])
-                
-                if fails_list is not None:
-                    f_field = get_info_field(infos, "fail")
-                    if f_field is not None:
-                        vals = f_field[completed_mask]
-                        if hasattr(vals, "cpu"):
-                            vals = vals.cpu().tolist()
-                        fails_list.extend([bool(x) for x in vals])
 
 
     def train(self):
