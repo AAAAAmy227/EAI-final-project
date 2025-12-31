@@ -65,18 +65,19 @@ def aggregate_metrics(metrics_storage: Dict[str, torch.Tensor],
         if len(completed_values) == 0:
             continue  # No episodes completed in this rollout
         
-        # Initialize list if needed
-        if metric_name not in episode_metrics:
-            episode_metrics[metric_name] = []
-        
         # Aggregate based on type
         if agg_type == "mean":
+            # Initialize list if needed
+            if metric_name not in episode_metrics:
+                episode_metrics[metric_name] = []
             # Collect all values for averaging later
             episode_metrics[metric_name].extend(completed_values.cpu().tolist())
         elif agg_type == "sum":
             # Sum all values
             total = completed_values.sum().item()
             if metric_name in episode_metrics:
-                episode_metrics[metric_name] += total
+                # Accumulate to existing sum (should be a float)
+                episode_metrics[metric_name] = episode_metrics[metric_name] + total
             else:
+                # Initialize as float
                 episode_metrics[metric_name] = total
