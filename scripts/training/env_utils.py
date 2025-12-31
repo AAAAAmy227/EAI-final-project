@@ -489,7 +489,7 @@ def build_env_kwargs(cfg: DictConfig, for_eval: bool, sim_config: dict) -> dict:
         render_backend = None
         
     kwargs = dict(
-        cfg=cfg,
+        cfg=OmegaConf.to_container(cfg, resolve=True),
         eval_mode=for_eval,
         obs_mode=cfg.env.obs_mode, 
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",

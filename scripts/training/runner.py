@@ -83,8 +83,8 @@ class PPORunner:
         
         # Determine observation/action dimensions (use eval_envs if training envs not created)
         source_env = self.envs if self.envs is not None else self.eval_envs
-        obs_space = source_env.observation_space
-        act_space = source_env.action_space
+        obs_space = source_env.get_wrapper_attr("single_observation_space")
+        act_space = source_env.get_wrapper_attr("single_action_space")
         print(f"Observation space: {obs_space}")
         print(f"Action space: {act_space}")
         
@@ -323,7 +323,7 @@ class PPORunner:
         if policy_fn is None:
             policy_fn = lambda obs: self.policy(obs=obs)
         
-        num_envs = env.unwrapped.num_envs
+        num_envs = envs.unwrapped.num_envs
         
         # 1. Pre-allocate TensorDict for training data (only if needed)
         storage = None
