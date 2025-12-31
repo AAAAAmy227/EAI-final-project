@@ -111,6 +111,10 @@ def test_ppo_update_basic():
             ent_coef = 0.0
             vf_coef = 0.5
             max_grad_norm = 0.5
+            
+            def get(self, key, default=None):
+                """Support dict-like .get() access for compatibility with ppo_utils.py"""
+                return getattr(self, key, default)
         ppo = PPO()
     
     optimizer = torch.optim.Adam(agent.parameters(), lr=1e-4)
@@ -256,6 +260,10 @@ def test_simulated_training_loop():
             max_grad_norm = 0.5
             gamma = 0.99
             gae_lambda = 0.95
+            
+            def get(self, key, default=None):
+                """Support dict-like .get() access for compatibility with ppo_utils.py"""
+                return getattr(self, key, default)
         ppo = PPO()
     
     optimizer = torch.optim.Adam(agent.parameters(), lr=1e-4)

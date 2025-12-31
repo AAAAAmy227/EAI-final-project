@@ -1,6 +1,6 @@
 import gymnasium as gym
 import mani_skill.envs
-import scripts.track1_env
+import scripts.envs.track1_env  # Fixed: Updated import path
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
