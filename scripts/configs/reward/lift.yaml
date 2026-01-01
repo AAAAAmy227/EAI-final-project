@@ -9,11 +9,11 @@ weights:
   approach: 1.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
   grasp: 1.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
   grasp_hold: 1.0       # Reward for stable grasp, grows linearly with consecutive grasp steps
-  horizontal_displacement: -1.0  # Penalize cube XY displacement from initial position
+  horizontal_displacement: 0.0  # Penalize cube XY displacement from initial position
   lift: 1.0           # Lift cube up (height in meters, scaled up)
   hold_progress: 1.0  # Reward for holding cube at lift_target height, proportional to hold time (0~1)
   action_rate: 0  # Penalize action changes (anti-jitter), range ~[0, 0.2]
-  success: 1000.0        # Task completion bonus
+  success: 2000.0        # Task completion bonus
   fail: -1.0         # Penalty when cube goes out of bounds
 
 # Grasp hold settings: reward stability of grasp
@@ -102,11 +102,12 @@ stable_hold_time: 3.0      # Required hold time in seconds (at 30Hz = 30 steps p
 # Fail condition: cube XY must stay within this rectangle (meters)
 # If cube goes outside, episode terminates with fail penalty
 # Set to null or remove to disable bounds checking
-fail_bounds:
-  x_min: 0.35   
-  x_max: 0.55
-  y_min: 0.15
-  y_max: 0.35
+# fail_bounds:
+#   x_min: 0.35   
+#   x_max: 0.55
+#   y_min: 0.15
+#   y_max: 0.35
+
 
 # Spawn bounds: where the red cube is randomly spawned at episode start
 # If not set, uses the default grid_bounds["right"] from environment

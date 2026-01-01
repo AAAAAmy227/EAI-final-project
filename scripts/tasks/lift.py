@@ -98,7 +98,7 @@ class LiftTaskHandler(BaseTaskHandler):
         red_fallen = self.env.red_cube.pose.p[:, 2] < fallen_threshold
         fail = red_fallen
         
-        if self.env.fail_bounds is not None:
+        if self.env.fail_bounds:
             red_pos = self.env.red_cube.pose.p
             out_of_bounds = (
                 (red_pos[:, 0] < self.env.fail_bounds["x_min"]) |
