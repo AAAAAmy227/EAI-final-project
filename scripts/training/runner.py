@@ -106,12 +106,24 @@ class PPORunner:
         
         # Agent setup
         logstd_init = cfg.ppo.get("logstd_init", 0.0)
-        self.agent = Agent(self.n_obs, self.n_act, device=self.device, logstd_init=logstd_init)
+        self.use_popart = cfg.get("value_normalization", False)
+        popart_beta = cfg.get("popart_beta", 0.0001)
+        
+        self.agent = Agent(
+            self.n_obs, self.n_act, device=self.device, logstd_init=logstd_init,
+            use_popart=self.use_popart, popart_beta=popart_beta
+        )
+        
+        if self.use_popart:
+            print(f"PopArt Value Normalization enabled (beta={popart_beta})")
         
         # Create inference agent only when using CudaGraphModule
         # (CudaGraph captures weights, so we need a separate copy for inference)
         if self.cudagraphs:
-            self.agent_inference = Agent(self.n_obs, self.n_act, device=self.device, logstd_init=logstd_init)
+            self.agent_inference = Agent(
+                self.n_obs, self.n_act, device=self.device, logstd_init=logstd_init,
+                use_popart=self.use_popart, popart_beta=popart_beta
+            )
             from_module(self.agent).data.to_module(self.agent_inference)
         else:
             self.agent_inference = None  # Not needed without CudaGraph
@@ -219,6 +231,10 @@ class PPORunner:
         inference_agent = self.agent_inference if self.cudagraphs else self.agent
         self.policy = inference_agent.get_action_and_value
         self.get_value = inference_agent.get_value
+        
+        # For GAE, we need denormalized values (original scale)
+        # This is crucial for PopArt: GAE uses original-scale values
+        self.get_value_for_gae = inference_agent.get_value_denormalized
         
         # 2. GAE: Use functools.partial to bind gamma/gae_lambda
         self.gae_fn = partial(
@@ -536,19 +552,42 @@ class PPORunner:
             
         Returns:
             Updated container with 'advantages' and 'returns' added
+            
+        Note:
+            When PopArt is enabled, vals in container are normalized.
+            For GAE, we need denormalized values (original scale).
+            After computing returns, we update PopArt stats and store
+            normalized returns for the value loss.
         """
         with torch.no_grad():
-            # next_obs is already normalized by wrapper
-            next_value = self.get_value(next_obs)
+            # Use denormalized values for GAE computation
+            # This is critical for PopArt: GAE needs original-scale values
+            next_value = self.get_value_for_gae(next_obs)
+            
+            # If PopArt, denormalize stored values for GAE
+            vals_for_gae = container["vals"]
+            if self.use_popart:
+                popart_head = self.agent.get_popart_head()
+                vals_for_gae = popart_head.denormalize(vals_for_gae)
         
         advs, rets = self.gae_fn(
             container["rewards"],
-            container["vals"],
+            vals_for_gae,
             container["bootstrap_mask"],
             next_value
         )
         container["advantages"] = advs
-        container["returns"] = rets
+        
+        # For PopArt: update stats with returns, then normalize returns for v_loss
+        if self.use_popart:
+            popart_head = self.agent.get_popart_head()
+            # Update running statistics with these returns
+            popart_head.update_stats(rets)
+            # Normalize returns for value loss computation
+            container["returns"] = popart_head.normalize_target(rets)
+        else:
+            container["returns"] = rets
+        
         return container
 
     def _run_ppo_update(self, container):
@@ -627,6 +666,12 @@ class PPORunner:
         # Add observation stats if enabled
         if self.log_obs_stats:
             logs.update(self._build_obs_stats_logs(container))
+        
+        # Add PopArt stats if enabled
+        if self.use_popart:
+            popart_head = self.agent.get_popart_head()
+            if popart_head is not None:
+                logs.update(popart_head.get_stats())
         
         # Log to WandB
         if self.cfg.wandb.enabled:
@@ -972,6 +1017,11 @@ class PPORunner:
                         "return_rms_var": reward_wrapper.rms.var,
                         "return_rms_count": reward_wrapper.rms.count,
                     })
+            
+            # PopArt state is already in agent.state_dict() (mu, sigma, nu are buffers)
+            # But we add explicit flag for clarity
+            if self.use_popart:
+                state["use_popart"] = True
 
             torch.save(state, model_path)
             torch.save(state, output_dir / "latest.pt")

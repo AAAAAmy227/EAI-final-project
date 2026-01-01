@@ -9,7 +9,7 @@ weights:
   approach: 1.0        # Encourage robot to approach cube
   grasp: 1.0           # Strong reward for grasping
   hold_progress: 1.0  # Progressive reward for maintaining grasp over time
-  success: 10.0        # Large bonus for completing task (N seconds of continuous grasp)
+  success: 500.0        # Large bonus for completing task (N seconds of continuous grasp)
   action_rate: 0    # Small penalty for jerky motions
 
 reward_scale: 1.0

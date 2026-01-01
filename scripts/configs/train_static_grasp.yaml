@@ -73,7 +73,14 @@ obs_clip: 10.0
 normalize_reward: true
 reward_norm_gamma: $(ppo.gamma)
 reward_norm_epsilon: 1e-8
-reward_clip: 10.0
+reward_clip: 1e10
+
+# Value Normalization (PopArt)
+# Use this when you have mixed dense/sparse rewards with different scales
+# PopArt normalizes value targets while preserving critic outputs
+value_normalization: false
+popart_beta: 0.0001  # Update rate for running stats (smaller = more stable)
+
 
 # Recording Configuration
 recording:
