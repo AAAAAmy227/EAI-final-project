@@ -675,12 +675,12 @@ class Track1Env(BaseEnv):
             # Lift and static_grasp tasks: no green cube needed
             self.green_cube = None
         elif self.task == "sort":
-            # Sort task: green cube is 1cm
+            # Sort task: green cube is 3cm (same as red)
             self.green_cube = self._build_cube(
                 name="green_cube",
-                half_size=0.005,
+                half_size=0.015,  # Changed from 0.005 - too small to grasp!
                 base_color=[0, 1, 0, 1],
-                default_pos=[0.497, 0.30, 0.005+ self.space_gap]
+                default_pos=[0.497, 0.30, 0.015+ self.space_gap]
             )
         else:  # stack
             # Stack task: green cube is 3cm

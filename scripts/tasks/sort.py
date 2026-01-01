@@ -47,8 +47,8 @@ class SortTaskHandler(BaseTaskHandler):
         
         # Red cube z height (3cm half-size cube)
         red_z = 0.015 + self.env.space_gap
-        # Green cube z height (1cm half-size cube for sort task)
-        green_z = 0.005 + self.env.space_gap
+        # Green cube z height (3cm half-size cube, same as red)
+        green_z = 0.015 + self.env.space_gap
         
         # Generate positions with collision avoidance
         for _ in range(max_retries):
