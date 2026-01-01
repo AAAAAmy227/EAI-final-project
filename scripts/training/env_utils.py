@@ -72,8 +72,8 @@ class RunningMeanStd:
         M2 = m_a + m_b + delta ** 2 * self.count * batch_count / tot_count
         new_var = M2 / tot_count
         
-        self.mean = new_mean
-        self.var = new_var
+        self.mean.copy_(new_mean)
+        self.var.copy_(new_var)
         self.count = tot_count
 
     def state_dict(self):
@@ -124,7 +124,7 @@ class NormalizeRewardGPU(gym.Wrapper):
         self.epsilon = epsilon
         self.clip = clip
         self.update_rms = True
-        self.rms = RunningMeanStd(shape=(), device=self.device)
+        self.rms = RunningMeanStd(shape=(1,), device=self.device)
         self.returns = torch.zeros(env.get_wrapper_attr("num_envs"), device=self.device)
 
     @property

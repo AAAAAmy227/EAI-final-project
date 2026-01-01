@@ -104,13 +104,13 @@ class PopArtValueHead(nn.Module):
         
         # Update running statistics using exponential moving average
         # mu_new = (1 - beta) * mu_old + beta * batch_mean
-        self.mu = (1 - self.beta) * self.mu + self.beta * batch_mean
-        self.nu = (1 - self.beta) * self.nu + self.beta * batch_sq_mean
+        self.mu.copy_((1 - self.beta) * self.mu + self.beta * batch_mean)
+        self.nu.copy_((1 - self.beta) * self.nu + self.beta * batch_sq_mean)
         
         # Compute new sigma: sigma = sqrt(E[x^2] - E[x]^2)
         # Clamp to avoid negative variance due to numerical issues
         variance = torch.clamp(self.nu - self.mu ** 2, min=self.epsilon)
-        self.sigma = torch.sqrt(variance)
+        self.sigma.copy_(torch.sqrt(variance))
         
         # Preserve outputs: adjust weights so denormalized output stays the same
         # Old: V_denorm = (w @ x + b) * old_sigma + old_mu
@@ -123,7 +123,8 @@ class PopArtValueHead(nn.Module):
         with torch.no_grad():
             scale = old_sigma / (self.sigma + self.epsilon)
             self.linear.weight.data.mul_(scale)
-            self.linear.bias.data = (old_sigma * self.linear.bias.data + old_mu - self.mu) / (self.sigma + self.epsilon)
+            new_bias = (old_sigma * self.linear.bias.data + old_mu - self.mu) / (self.sigma + self.epsilon)
+            self.linear.bias.data.copy_(new_bias)
         
         self.update_count += 1
     
