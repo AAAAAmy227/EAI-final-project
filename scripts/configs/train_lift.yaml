@@ -1,6 +1,6 @@
 # Default configuration for PPO training
 defaults:
-  - env: track1
+  - env: lift
   - reward: lift
   - control: single_arm  # Use dual_arm for sort task
   - obs: single_arm      # Use dual_arm for sort task
@@ -71,7 +71,7 @@ obs_clip: 10.0         # Clip normalized observations to [-clip, clip]
 normalize_reward: true       # Whether to apply running reward normalization
 reward_norm_gamma: $(ppo.gamma)      # Gamma for discounted return tracking (should match ppo.gamma)
 reward_norm_epsilon: 1e-8    # Numerical stability epsilon for reward normalization
-reward_clip: 10.0            # Clip normalized rewards to [-clip, clip]
+reward_clip: 1e10            # Clip normalized rewards to [-clip, clip]
 # Value Normalization (PopArt)
 # Use this when you have mixed dense/sparse rewards with different scales
 # PopArt normalizes value targets while preserving critic outputs

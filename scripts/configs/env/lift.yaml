@@ -1,0 +1,78 @@
+# Track1 environment configuration
+env_id: "Track1-v0"
+task: "lift"
+camera_mode: "direct_pinhole"
+obs_mode: "state_dict"          # Use state_dict for name label
+include_state: true
+domain_randomization: false  # Disable for faster training (enable for sim2real)
+
+# Robot URDF path (so101_new has fingertip auxiliary links for TCP calculation)
+robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
+
+# Simulation frequency (must match real robot for sim2real)
+# Real robot data is 30 FPS
+sim_freq: 100       # Physics simulation frequency (Hz)
+control_freq: 20    # Control frequency (Hz) - MUST match real data (30 Hz)
+
+# Max episode steps based on trajectory analysis
+# Formula: base_steps * multiplier + stable_hold_steps (from reward config)
+# lift: 296 steps, stack: 384 steps, sort: 619 steps (at 30 Hz)
+# stable_hold_steps is computed from reward.stable_hold_time * control_freq
+episode_steps:
+  base: 300         # Base from trajectory analysis (lift max)
+  multiplier: 1.5   # 20% buffer for RL exploration
+  # Effective max_episode_steps for lift with 10s hold:
+  # 296 * 1.2 + (10 * 30) = 355 + 300 = 655 steps
+  # Effective max_episode_steps = 296 * 1.2 = 355 (for lift)
+  # Override for stack: base=384, for sort: base=619
+
+# Camera extrinsic parameters (calibrated via distance transform optimization)
+# This is the cam2world matrix (4x4)
+camera:
+  extrinsic:
+    - [-0.999924, 0.012300, 0.000780, 0.319304]
+    - [0.012322, 0.999045, 0.041926, 0.269718]
+    - [-0.000264, 0.041932, -0.999120, 0.386226]
+    - [0.0, 0.0, 0.0, 1.0]
+  # For reference, original look_at params:
+  # eye: [0.316, 0.260, 0.407]
+  # target: [0.316, 0.260, 0.0]
+  # up: [0, -1, 0]
+  
+  # Undistortion alpha for pinhole output modes (direct_pinhole, distort-twice)
+  # 0.0 = crop all black borders (lose edge pixels)
+  # 1.0 = keep all source pixels (has black borders, image shrinks)
+  # 0.25 = optimal for full work area visibility
+  undistort_alpha: 0.25
+
+# Cube Physical Properties (aligned with reference implementation)
+# These values are applied to the cube during environment creation
+cube_physics:
+  mass: 0.1                 # 100g (reference uses 0.1)
+  static_friction: 0.3      # High friction for stable grasp (reference uses 5.0)
+  dynamic_friction: 0.3     # Dynamic friction (reference uses 3.0)
+  restitution: 0.0          # No bounce (reference uses 0.0)
+
+# Table Physical Properties
+# These values are applied to the table surface
+# Note: Actual contact friction = sqrt(cube_friction * table_friction)
+# Example: sqrt(5.0 * 2.0) = 3.16
+table_physics:
+  static_friction: 0.3      # Table static friction
+  dynamic_friction: 0.3     # Table dynamic friction
+  restitution: 0.0          # No bounce
+
+# Gripper Physical Properties (aligned with reference implementation)
+# These values are applied to the robot gripper links
+gripper_physics:
+  static_friction: 2.0      # Gripper friction (reference uses 2.0)
+  dynamic_friction: 2.0     # Gripper friction (reference uses 2.0)
+  restitution: 0.0          # No bounce (reference uses 0.0)
+  patch_radius: 0.1         # Torsional friction contact patch radius (reference uses 0.1)
+  min_patch_radius: 0.1     # Minimum torsional patch radius (reference uses 0.1)
+
+# Physics Solver Configuration
+# ManiSkill default is 15 iterations. Source code recommends >= 20 for stable grasps.
+solver:
+  position_iterations: 15   # Solver position iterations (default: 15, recommended for grasping: >= 20)
+  velocity_iterations: 1    # Solver velocity iterations (default: 1)

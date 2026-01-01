@@ -17,9 +17,14 @@ class LiftTaskHandler(BaseTaskHandler):
     def _get_train_metrics(cls) -> Dict[str, str]:
         """Define Lift task metrics for training."""
         return {
-            "grasp_reward": "mean",
-            "lift_reward": "mean",
-            "moving_distance": "mean",
+            "reward/approach": "mean",
+            "reward/grasp": "mean",
+            "reward/grasp_hold": "mean",
+            "reward/horizontal_displacement": "mean",
+            "reward/lift": "mean",
+            "reward/hold_progress": "mean",
+            "reward/action_rate": "mean",
+            "reward/success_bonus": "mean",
             "grasp_success": "mean",
             "lift_success": "mean",
         }
@@ -300,14 +305,29 @@ class LiftTaskHandler(BaseTaskHandler):
                   w["fail"] * fail_penalty)
         
         # Store components
+        # Store components
+        # 1. Detailed reward components for training logging (flattened for Runner)
+        reward_info = {
+            "reward/approach": (w["approach"] * approach_reward + w["approach"] * approach2_reward),
+            "reward/grasp": (dynamic_grasp_weight * grasp_reward),
+            "reward/grasp_hold": (w.get("grasp_hold", 0.0) * grasp_hold_reward),
+            "reward/horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement),
+            "reward/lift": (dynamic_lift_weight * effective_lift_reward),
+            "reward/hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress),
+            "reward/action_rate": (w.get("action_rate", 0.0) * action_rate),
+            "reward/success_bonus": (dynamic_success_weight * success_bonus),
+        }
+        info.update(reward_info)
+
+        # 2. Legacy/averaged components (optional, kept for compatibility if needed)
         info["reward_components"] = {
-            "approach": (w["approach"] * approach_reward).mean(),
-            "grasp": (dynamic_grasp_weight * grasp_reward).mean(),
-            "grasp_hold": (w.get("grasp_hold", 0.0) * grasp_hold_reward).mean(),
-            "horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement).mean(),
-            "lift": (dynamic_lift_weight * effective_lift_reward).mean(),
-            "hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress).mean(),
-            "action_rate": (w.get("action_rate", 0.0) * action_rate).mean(),
+            "approach": reward_info["reward/approach"].mean(),
+            "grasp": reward_info["reward/grasp"].mean(),
+            "grasp_hold": reward_info["reward/grasp_hold"].mean(),
+            "horizontal_displacement": reward_info["reward/horizontal_displacement"].mean(),
+            "lift": reward_info["reward/lift"].mean(),
+            "hold_progress": reward_info["reward/hold_progress"].mean(),
+            "action_rate": reward_info["reward/action_rate"].mean(),
         }
         
         if self.env.eval_mode:
