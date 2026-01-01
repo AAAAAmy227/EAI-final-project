@@ -3,20 +3,20 @@ env_id: "Track1-v0"
 task: "static_grasp"
 camera_mode: "direct_pinhole"
 obs_mode: "state_dict"
-include_state: true
+include_state: true #seems deprecated
 domain_randomization: false  # Disable for simpler debugging
 
 # Robot URDF path
 robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
 
 # Simulation frequency
-sim_freq: 240
-control_freq: 30
+sim_freq: 100
+control_freq: 20
 
 # Max episode steps for static_grasp task
 # Shorter than lift since success is just grasping, not lifting
 episode_steps:
-  base: 300         # 10 seconds at 30Hz
+  base: 100         # 10 seconds at 30Hz
   multiplier: 1.0   # No buffer needed for simple task
 
 # Camera extrinsic parameters (same as lift)
@@ -52,5 +52,5 @@ gripper_physics:
 
 # Physics solver
 solver:
-  position_iterations: 25
+  position_iterations: 15 # lower than default
   velocity_iterations: 1

@@ -10,14 +10,14 @@ weights:
   grasp: 1.0           # Strong reward for grasping
   hold_progress: 1.0  # Progressive reward for maintaining grasp over time
   success: 10.0        # Large bonus for completing task (N seconds of continuous grasp)
-  action_rate: -0.1    # Small penalty for jerky motions
+  action_rate: 0    # Small penalty for jerky motions
 
 reward_scale: 1.0
 
 # Approach reward parameters
 approach_curve: "tanh"
 approach_mode: "tcp_midpoint"
-approach_tanh_scale: 0.1      # Tanh scale for approach guidance
+approach_tanh_scale: 0.05      # Tanh scale for approach guidance
 approach_threshold: 0.05      # 5cm - used for logging stage transition
 
 # Grasp detection parameters
