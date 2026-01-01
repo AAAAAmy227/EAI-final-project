@@ -27,3 +27,4 @@ undistort_comparison/
 wrist_calibration_data/
 eai-dataset-undistorted/
 grasp-cube-sample/
+uv.lock
