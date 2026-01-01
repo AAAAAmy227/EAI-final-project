@@ -46,7 +46,15 @@ class PPORunner:
         """
         self.cfg = cfg
         self.eval_only = eval_only
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Setup device from config (supports multi-GPU machines)
+        device_id = cfg.get("device_id", 0)
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{device_id}")
+            # Also set default CUDA device for operations that don't specify device
+            torch.cuda.set_device(device_id)
+        else:
+            self.device = torch.device("cpu")
         print(f"Using device: {self.device}")
         
         # Hyperparameters

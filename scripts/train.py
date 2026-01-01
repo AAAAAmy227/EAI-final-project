@@ -30,6 +30,19 @@ def main(cfg: DictConfig):
     torch.manual_seed(cfg.seed)
     torch.backends.cudnn.deterministic = True
     
+    # Device Setup (Masking for SAPIEN compatibility)
+    # SAPIEN/PhysX often requires to be on the "first" visible device (cuda:0)
+    # So we mask the visible devices to only include the requested one.
+    if "device_id" in cfg:
+        target_device = int(cfg.device_id)
+        if target_device != 0:
+            print(f"Masking visible devices to target GPU {target_device}...")
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(target_device)
+            # Update config to think it's on device 0 (since it's now the only one visible)
+            cfg.device_id = 0
+            OmegaConf.update(cfg, "device_id", 0)  # Ensure Hydra config is updated
+
+    
     # Experiment Setup
     exp_name = cfg.exp_name or f"track1_{cfg.env.task}"
     run_name = f"{exp_name}__{cfg.seed}__{int(time.time())}"
