@@ -24,7 +24,8 @@ include_abs_pos: false
 # - true: include target_qpos / qpos_scale
 # - false: exclude
 # - "relative": (target_qpos - qpos) / action_bounds
-include_target_qpos: "relative"
+# include_target_qpos: "relative"
+include_target_qpos: false
 
 # Action bounds for relative target_qpos normalization
 action_bounds: ${control.action_bounds}

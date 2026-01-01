@@ -588,6 +588,20 @@ class Track1Env(BaseEnv):
         else:
             super()._load_agent(options, agent_poses)
         
+        # Defensive check: Ensure agent is properly configured as MultiAgent
+        # SingleArmWrapper and related code assume dual-arm setup
+        from mani_skill.agents.multi_agent import MultiAgent
+        if not isinstance(self.agent, MultiAgent):
+            raise RuntimeError(
+                f"Track1Env requires dual-arm setup but agent is {type(self.agent).__name__}. "
+                f"Expected MultiAgent. Check robot_uids configuration: {self.robot_uids}"
+            )
+        if len(self.agent.agents) != 2:
+            raise RuntimeError(
+                f"Track1Env requires exactly 2 robots but got {len(self.agent.agents)}. "
+                f"Check robot_uids configuration: {self.robot_uids}"
+            )
+        
         # Create agents dict for easy access by name
         self._agents_dict = {
             "left": self.agent.agents[0],    # so101-0

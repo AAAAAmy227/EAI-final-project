@@ -544,7 +544,7 @@ def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_di
                 record_env_state=rec_cfg.get("save_env_state", False),
                 info_on_video=rec_cfg.get("info_on_video", True),
                 video_fps=rec_cfg.get("video_fps", 30),
-                save_on_reset=False,
+                save_on_reset=True,  # Trajectory saved when reset() is called
                 max_steps_per_video=int(1e6),
                 render_substeps=False,
             )

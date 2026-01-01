@@ -51,7 +51,7 @@ ppo:
   reward_scale: 1.0
   handle_timeout_termination: true
   logstd_init: -1.0
-  logstd_min: -5.0
+  logstd_min: -10.0
   logstd_max: 0.0
 
 # Model saving
@@ -61,7 +61,7 @@ checkpoint: null
 
 # Debugging/Monitoring
 log_obs_stats: true
-async_eval: true
+async_eval: false
 
 # Observation Normalization
 normalize_obs: true

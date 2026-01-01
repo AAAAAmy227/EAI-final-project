@@ -857,6 +857,10 @@ class PPORunner:
         rec_cfg = self.cfg.get("recording", {})
         save_csv = rec_cfg.get("save_step_csv", True)
         
+        # reset envs to ensure a clean state
+        # do not worry about the auto save, when reset is called multiple times, it will not save multiple times
+        self.eval_envs.reset()
+
         # Run evaluation rollout (reusing unified rollout method)
         _, _, step_data_per_env = self._rollout(
             eval_obs,
@@ -881,10 +885,11 @@ class PPORunner:
                 wandb.log(eval_logs)
         
         if self.video_dir is not None:
-            # 1. Save ManiSkill videos (mp4) and trajectories (h5)
-            self.eval_envs.get_wrapper_attr("call")("flush_video", save=True)
+
+            # 2. Trigger trajectory save (save_on_reset=True flushes h5 and video on reset)
+            self.eval_envs.reset()
             
-            # 2. Save per-environment step-by-step CSVs
+            # 3. Save per-environment step-by-step CSVs
             if save_csv and step_data_per_env:
                 self._save_step_csvs(step_data_per_env)
 
