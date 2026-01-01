@@ -1,8 +1,20 @@
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, asdict, is_dataclass
 from typing import Dict, Any, Optional, List, Union
 import numpy as np
 import copy
 from omegaconf import DictConfig, OmegaConf
+
+
+def _to_plain(obj):
+    """Recursively convert dataclasses and containers to JSON-serializable plain types."""
+    if is_dataclass(obj):
+        return _to_plain(asdict(obj))
+    if isinstance(obj, dict):
+        return {k: _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_plain(v) for v in obj)
+    return obj
 
 @dataclass
 class PhysicsConfig:
@@ -105,6 +117,9 @@ class Track1Config:
         else:
             cfg_dict = copy.deepcopy(cfg)
 
+        # Work on a deep copy so callers' dictionaries are not mutated (affects env.spec.kwargs)
+        cfg_dict = copy.deepcopy(cfg_dict)
+
         # Initialize with defaults
         config = cls()
         
@@ -167,6 +182,6 @@ class Track1Config:
         config.reward = RewardConfig(**{k: v for k, v in reward_dict.items() if k in RewardConfig.__dataclass_fields__})
 
         config.robot_urdf = env_cfg.get("robot_urdf", None)
-        config.raw_cfg = cfg_dict
+        config.raw_cfg = _to_plain(cfg_dict)
 
         return config

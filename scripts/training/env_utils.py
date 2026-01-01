@@ -253,7 +253,7 @@ class FlattenActionWrapper(gym.ActionWrapper):
     Calculates action_names (e.g., 'action/so101-1/shoulder_pan') based on agent metadata.
     Designed for torch.compile optimizations.
     """
-    def __init__(self, env):
+    def __init__(self, env, compile=True):
         super().__init__(env)
         from gymnasium.vector.utils import batch_space
         
@@ -286,8 +286,8 @@ class FlattenActionWrapper(gym.ActionWrapper):
         self.action_space = batch_space(self.single_action_space, n=self.base_env.num_envs)
         
         # Optimize action method
-        if hasattr(torch, "compile"):
-            self.action = torch.compile(self.action)
+        if compile and hasattr(torch, "compile"):
+            self.action = torch.compile(self.action, mode="reduce-overhead")
             
         print(f"[FlattenActionWrapper] Flattened {len(self._leaf_info)} agents into {start_idx} action dims.")
 
@@ -329,7 +329,7 @@ class FlattenStateWrapper(gym.ObservationWrapper):
     """
 
     
-    def __init__(self, env) -> None:
+    def __init__(self, env, compile=True) -> None:
         super().__init__(env)
         from mani_skill.envs.sapien_env import BaseEnv
         
@@ -348,8 +348,8 @@ class FlattenStateWrapper(gym.ObservationWrapper):
         
         # Compile the observation method for maximum performance
         # PyTorch will unroll the path-following loop during compilation
-        if hasattr(torch, "compile"):
-            self.observation = torch.compile(self.observation)
+        if compile and hasattr(torch, "compile"):
+            self.observation = torch.compile(self.observation, mode="reduce-overhead")
         
         print(f"[FlattenStateWrapper] Flattened {len(self._leaf_paths)} leaf tensors into {total_dim} dimensions.")
     
@@ -477,6 +477,18 @@ def build_sim_config(cfg: DictConfig) -> dict:
     }
 
 
+def recursive_config_convert(obj):
+    from dataclasses import is_dataclass, asdict
+    if is_dataclass(obj):
+        return recursive_config_convert(asdict(obj))
+    elif isinstance(obj, dict):
+        return {k: recursive_config_convert(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [recursive_config_convert(v) for v in obj]
+    else:
+        return obj
+
+
 def build_env_kwargs(cfg: DictConfig, for_eval: bool, sim_config: dict) -> dict:
     """Build environment keyword arguments."""
     device_id = cfg.get("device_id", 0)
@@ -490,7 +502,7 @@ def build_env_kwargs(cfg: DictConfig, for_eval: bool, sim_config: dict) -> dict:
         render_backend = None
         
     kwargs = dict(
-        cfg=OmegaConf.to_container(cfg, resolve=True),
+        cfg=recursive_config_convert(OmegaConf.to_container(cfg, resolve=True)),
         eval_mode=for_eval,
         obs_mode=cfg.env.obs_mode, 
         reward_mode=cfg.reward.reward_mode if "reward" in cfg else "sparse",
@@ -521,13 +533,15 @@ def create_base_env(cfg: DictConfig, num_envs: int, for_eval: bool, env_kwargs: 
 
 def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_dir: str = None):
     """Apply wrappers in correct order."""
+    should_compile = cfg.get("compile", True)
+
     # 1. Single-arm logic (filters actions/obs)
     if cfg.env.task in ["lift", "stack", "static_grasp"]:
         env = SingleArmWrapper(env)
     
     # 2. Spaces flattening (required for training runner)
-    env = FlattenActionWrapper(env)
-    env = FlattenStateWrapper(env)
+    env = FlattenActionWrapper(env, compile=should_compile)
+    env = FlattenStateWrapper(env, compile=should_compile)
     
     # 3. Video/Trajectory recording (eval only, configurable)
     if for_eval and video_dir:
@@ -544,7 +558,8 @@ def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_di
                 record_env_state=rec_cfg.get("save_env_state", False),
                 info_on_video=rec_cfg.get("info_on_video", True),
                 video_fps=rec_cfg.get("video_fps", 30),
-                save_on_reset=True,  # Trajectory saved when reset() is called
+                # Enable flush at reset/close so trajectories are actually written
+                save_on_reset=save_trajectory,
                 max_steps_per_video=int(1e6),
                 render_substeps=False,
             )
