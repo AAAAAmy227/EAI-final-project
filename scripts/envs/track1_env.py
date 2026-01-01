@@ -166,7 +166,7 @@ class Track1Env(BaseEnv):
         self.active_arm = env_cfg.get("active_arm", "left")  # For sort: which arm is being trained
         self.min_cube_distance = env_cfg.get("min_cube_distance", 0.04)  # Collision avoidance spawn
         self.min_grasp_steps = env_cfg.get("min_grasp_steps", 10)  # Min consecutive grasp steps for success
-        self.fail_red_out_of_bounds = rw_cfg.weights.get("fail_red_out_of_bounds", False)
+        self.fail_non_target_out_of_bounds = env_cfg.get("fail_non_target_out_of_bounds", False)  # Fail if non-target cube leaves mid
         self.place_tanh_scale = getattr(rw_cfg, 'place_tanh_scale', 0.1)
 
         self.prev_action = None

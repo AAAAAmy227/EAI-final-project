@@ -14,9 +14,6 @@ weights:
   success: 2000.0         # Task completion bonus
   fail: -1.0              # Penalty for cube falling
 
-# Fail condition: fail if red cube leaves mid-grid (disabled for exploration)
-fail_red_out_of_bounds: false
-
 # Grasp hold settings
 grasp_hold_max_steps: 100
 

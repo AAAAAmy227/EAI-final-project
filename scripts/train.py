@@ -35,12 +35,11 @@ def main(cfg: DictConfig):
     # So we mask the visible devices to only include the requested one.
     if "device_id" in cfg:
         target_device = int(cfg.device_id)
-        if target_device != 0:
-            print(f"Masking visible devices to target GPU {target_device}...")
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(target_device)
-            # Update config to think it's on device 0 (since it's now the only one visible)
-            cfg.device_id = 0
-            OmegaConf.update(cfg, "device_id", 0)  # Ensure Hydra config is updated
+        print(f"Masking visible devices to target GPU {target_device}...")
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(target_device)
+        # Update config to think it's on device 0 (since it's now the only one visible)
+        cfg.device_id = 0
+        OmegaConf.update(cfg, "device_id", 0)  # Ensure Hydra config is updated
 
     
     # Experiment Setup

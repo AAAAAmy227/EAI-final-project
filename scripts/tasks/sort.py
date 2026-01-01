@@ -174,18 +174,19 @@ class SortTaskHandler(BaseTaskHandler):
         green_fallen = green_pos[:, 2] < fallen_threshold
         fail = red_fallen | green_fallen
         
-        # Optional: fail if red cube leaves mid-grid during left-arm phase
-        fail_red_out_of_bounds = getattr(self.env, 'fail_red_out_of_bounds', False)
-        if fail_red_out_of_bounds and active_arm == "left":
+        # Optional: fail if non-target cube leaves mid-grid (e.g. red for left-arm phase)
+        fail_non_target_out_of_bounds = getattr(self.env, 'fail_non_target_out_of_bounds', False)
+        if fail_non_target_out_of_bounds:
             mid_bounds = self.env.grid_bounds["mid"]
-            red_out_of_mid = (
-                (red_pos[:, 0] < mid_bounds["x_min"]) |
-                (red_pos[:, 0] > mid_bounds["x_max"]) |
-                (red_pos[:, 1] < mid_bounds["y_min"]) |
-                (red_pos[:, 1] > mid_bounds["y_max"])
+            non_target_cube = self._get_non_target_cube()
+            non_target_pos = non_target_cube.pose.p
+            non_target_out_of_mid = (
+                (non_target_pos[:, 0] < mid_bounds["x_min"]) |
+                (non_target_pos[:, 0] > mid_bounds["x_max"]) |
+                (non_target_pos[:, 1] < mid_bounds["y_min"]) |
+                (non_target_pos[:, 1] > mid_bounds["y_max"])
             )
-            # Only fail if not grasping (allow movement while grasped)
-            fail = fail | (red_out_of_mid & (~is_grasped))
+            fail = fail | non_target_out_of_mid
         
         # Ensure success is False if already failed
         success = success & (~fail)

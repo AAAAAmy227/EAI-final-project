@@ -15,6 +15,9 @@ min_cube_distance: 0.05  # 5cm
 # Minimum consecutive grasp steps to count as valid grasp for success
 min_grasp_steps: 10  # ~0.5s at 20Hz control freq
 
+# Fail if non-target cube leaves mid-grid (disabled by default for exploration)
+fail_non_target_out_of_bounds: false
+
 # Robot URDF path
 robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
 
