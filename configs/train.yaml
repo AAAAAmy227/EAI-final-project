@@ -31,6 +31,7 @@ training:
   num_eval_steps: null
   eval_step_multiplier: 1.0
   eval_freq: 25
+  skip_eval: true  # If true, save checkpoint without running eval (faster training)
 
 # PPO hyperparameters
 ppo:

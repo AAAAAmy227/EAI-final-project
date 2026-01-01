@@ -503,9 +503,13 @@ class PPORunner:
             # Accumulate training time
             training_time += time.time() - iter_start_time
             
-            # Evaluation
+            # Evaluation or just save checkpoint
             if iteration % self.cfg.training.eval_freq == 0:
-                self._handle_evaluation(iteration)
+                if self.cfg.training.get("skip_eval", False):
+                    # Skip eval, just save checkpoint
+                    self._save_checkpoint(iteration)
+                else:
+                    self._handle_evaluation(iteration)
         
         # Cleanup
         if self.async_eval and self.eval_thread is not None and self.eval_thread.is_alive():
