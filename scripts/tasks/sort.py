@@ -30,13 +30,11 @@ class SortTaskHandler(BaseTaskHandler):
             "reward/grasp": "mean",
             "reward/grasp_hold": "mean",
             "reward/place": "mean",
-            "reward/keep_red_in_bounds": "mean",
+            "reward/keep_non_target_in_bounds": "mean",
             "reward/action_rate": "mean",
             "reward/success_bonus": "mean",
             "grasp_success": "mean",
-            "place_success": "mean",
-            "green_in_left": "mean",
-            "red_in_right": "mean",
+            "target_in_place": "mean",  # Only the active arm's target
         }
 
     def initialize_episode(self, env_idx, options):
@@ -97,6 +95,11 @@ class SortTaskHandler(BaseTaskHandler):
             self.grasp_hold_counter = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.int32)
         self.grasp_hold_counter[env_idx] = 0
         
+        # Reset was_ever_grasped tracking (must grasp to succeed)
+        if self.was_ever_grasped is None:
+            self.was_ever_grasped = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.bool)
+        self.was_ever_grasped[env_idx] = False
+        
         # Reset prev_action for action rate penalty
         self.prev_action = None
 
@@ -129,7 +132,7 @@ class SortTaskHandler(BaseTaskHandler):
             (red_pos[:, 2] >= -0.01)  # Not fallen
         )
         
-        # Check grasp state
+        # Check grasp state and update was_ever_grasped tracking
         agent = self._get_active_agent()
         target_cube = self._get_target_cube()
         is_grasped = agent.is_grasping(
@@ -138,12 +141,32 @@ class SortTaskHandler(BaseTaskHandler):
             max_angle=self.env.grasp_max_angle
         )
         
-        # Success condition (for left-arm phase: green in left)
+        # Update grasp hold counter (consecutive grasp steps)
+        if self.grasp_hold_counter is None:
+            self.grasp_hold_counter = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.int32)
+        self.grasp_hold_counter = torch.where(
+            is_grasped,
+            self.grasp_hold_counter + 1,
+            torch.zeros_like(self.grasp_hold_counter)
+        )
+        
+        # Track if cube was ever grasped for sufficient duration (required for success)
+        # min_grasp_steps: minimum consecutive grasp steps to count as valid grasp
+        min_grasp_steps = getattr(self.env, 'min_grasp_steps', 10)  # Default 10 steps (~0.5s at 20Hz)
+        if self.was_ever_grasped is None:
+            self.was_ever_grasped = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.bool)
+        # Once grasp_hold_counter reaches threshold, lock in was_ever_grasped
+        self.was_ever_grasped = self.was_ever_grasped | (self.grasp_hold_counter >= min_grasp_steps)
+        
+        # Success condition: cube in target grid AND was ever grasped (no pushing allowed)
         active_arm = getattr(self.env, 'active_arm', 'left')
         if active_arm == "left":
-            success = green_in_left
+            in_target = green_in_left
         else:
-            success = red_in_right
+            in_target = red_in_right
+        
+        # Must have grasped at some point to count as success
+        success = in_target & self.was_ever_grasped
         
         # Failure conditions
         fallen_threshold = -0.05
@@ -167,12 +190,14 @@ class SortTaskHandler(BaseTaskHandler):
         # Ensure success is False if already failed
         success = success & (~fail)
         
+        # Only return the active arm's target placement metric
         return {
             "success": success, 
             "fail": fail,
-            "green_in_left": green_in_left,
-            "red_in_right": red_in_right,
+            "target_in_place": in_target,  # green_in_left for left arm, red_in_right for right arm
             "is_grasped": is_grasped,
+            "was_ever_grasped": self.was_ever_grasped,
+            "grasp_hold_steps": self.grasp_hold_counter,
         }
 
     def _get_active_agent(self):
@@ -303,7 +328,7 @@ class SortTaskHandler(BaseTaskHandler):
             w.get("grasp", 1.0) * grasp_reward +
             w.get("grasp_hold", 0.0) * grasp_hold_reward +
             w.get("place", 1.0) * place_reward +
-            w.get("keep_red_in_bounds", 0.0) * (-keep_in_bounds_penalty) +  # Negative weight for penalty
+            w.get("keep_non_target_in_bounds", 0.0) * (-keep_in_bounds_penalty) +  # Negative weight for penalty
             w.get("action_rate", 0.0) * (-action_rate) +
             w.get("success", 0.0) * success_bonus +
             w.get("fail", 0.0) * fail_penalty
@@ -315,7 +340,7 @@ class SortTaskHandler(BaseTaskHandler):
             "reward/grasp": w.get("grasp", 1.0) * grasp_reward,
             "reward/grasp_hold": w.get("grasp_hold", 0.0) * grasp_hold_reward,
             "reward/place": w.get("place", 1.0) * place_reward,
-            "reward/keep_red_in_bounds": w.get("keep_red_in_bounds", 0.0) * (-keep_in_bounds_penalty),
+            "reward/keep_non_target_in_bounds": w.get("keep_non_target_in_bounds", 0.0) * (-keep_in_bounds_penalty),
             "reward/action_rate": w.get("action_rate", 0.0) * (-action_rate),
             "reward/success_bonus": w.get("success", 0.0) * success_bonus,
         }
@@ -327,7 +352,7 @@ class SortTaskHandler(BaseTaskHandler):
             "grasp": reward_info["reward/grasp"].mean(),
             "grasp_hold": reward_info["reward/grasp_hold"].mean(),
             "place": reward_info["reward/place"].mean(),
-            "keep_red_in_bounds": reward_info["reward/keep_red_in_bounds"].mean(),
+            "keep_non_target_in_bounds": reward_info["reward/keep_non_target_in_bounds"].mean(),
             "action_rate": reward_info["reward/action_rate"].mean(),
         }
         

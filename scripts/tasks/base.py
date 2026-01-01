@@ -26,6 +26,7 @@ class BaseTaskHandler(ABC):
         self.initial_cube_xy: Optional[torch.Tensor] = None
         self.lift_hold_counter: Optional[torch.Tensor] = None
         self.grasp_hold_counter: Optional[torch.Tensor] = None
+        self.was_ever_grasped: Optional[torch.Tensor] = None  # For sort task grasp tracking
         self.prev_action: Optional[torch.Tensor] = None
 
     @property

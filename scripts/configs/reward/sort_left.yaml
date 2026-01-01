@@ -9,7 +9,7 @@ weights:
   grasp: 1.0              # Bonus for grasping
   grasp_hold: 0.5         # Reward for stable grasp
   place: 2.0              # Place green cube in left grid
-  keep_red_in_bounds: 0.0 # Penalty if red cube leaves mid (disabled by default)
+  keep_non_target_in_bounds: 0.0 # Penalty if non-target cube leaves mid (disabled by default)
   action_rate: 0.0        # Action smoothness penalty
   success: 2000.0         # Task completion bonus
   fail: -1.0              # Penalty for cube falling

@@ -12,6 +12,9 @@ active_arm: "left"
 # Collision avoidance spawn: minimum distance between cubes
 min_cube_distance: 0.05  # 5cm
 
+# Minimum consecutive grasp steps to count as valid grasp for success
+min_grasp_steps: 10  # ~0.5s at 20Hz control freq
+
 # Robot URDF path
 robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
 
