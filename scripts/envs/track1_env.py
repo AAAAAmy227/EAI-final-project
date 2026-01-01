@@ -161,6 +161,13 @@ class Track1Env(BaseEnv):
         self.adaptive_success_max = rw_cfg.adaptive_success_weight.max_weight
         self.adaptive_success_tau = rw_cfg.adaptive_success_weight.tau
 
+        # 4.3 Sort task specific config
+        env_cfg = cfg.raw_cfg.get("env", {}) if cfg.raw_cfg else {}
+        self.active_arm = env_cfg.get("active_arm", "left")  # For sort: which arm is being trained
+        self.min_cube_distance = env_cfg.get("min_cube_distance", 0.04)  # Collision avoidance spawn
+        self.fail_red_out_of_bounds = rw_cfg.weights.get("fail_red_out_of_bounds", False)
+        self.place_tanh_scale = getattr(rw_cfg, 'place_tanh_scale', 0.1)
+
         self.prev_action = None
         self.space_gap = 0.001 
         self.single_arm_mode = (self.task != "sort")
@@ -430,8 +437,14 @@ class Track1Env(BaseEnv):
                     green_disp = torch.clamp(green_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
                 obs["green_cube_displacement"] = green_disp
 
-        # 2. End-Effector (TCP) State (Right Arm) - using agent.tcp_pos (fingertip midpoint)
-        agent = self.right_arm
+        # 2. End-Effector (TCP) State - using active arm based on task
+        # For sort task: use configured active_arm; for other tasks: use right arm
+        if self.task == "sort":
+            agent = self.left_arm if self.active_arm == "left" else self.right_arm
+            target_cube = self.green_cube if self.active_arm == "left" else self.red_cube
+        else:
+            agent = self.right_arm
+            target_cube = self.red_cube
         
         tcp_pos = agent.tcp_pos  # Uses new fingertip-based calculation
         tcp_pose = agent.tcp_pose
@@ -439,7 +452,7 @@ class Track1Env(BaseEnv):
         # 2a. is_grasped observation (optional, config controlled)
         if self.include_is_grasped:
             is_grasped = agent.is_grasping(
-                self.red_cube, 
+                target_cube, 
                 min_force=self.grasp_min_force, 
                 max_angle=self.grasp_max_angle
             )
@@ -457,6 +470,14 @@ class Track1Env(BaseEnv):
             clip_val = self.relative_pos_clip
             tcp_to_red = torch.clamp(tcp_to_red, -clip_val, clip_val) / clip_val
         obs["tcp_to_red_pos"] = tcp_to_red
+        
+        # TCP to Green Cube (for sort task)
+        if self.task == "sort" and green_cube_pos is not None:
+            tcp_to_green = green_cube_pos - tcp_pos
+            if self.obs_normalize_enabled:
+                clip_val = self.relative_pos_clip
+                tcp_to_green = torch.clamp(tcp_to_green, -clip_val, clip_val) / clip_val
+            obs["tcp_to_green_pos"] = tcp_to_green
         
         # Red to Green (for stack task)
         if self.task == "stack" and green_cube_pos is not None:

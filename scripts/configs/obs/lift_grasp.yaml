@@ -1,0 +1,40 @@
+# Observation normalization for single-arm tasks (Lift, Stack)
+# Derived from real trajectory analysis
+
+# qpos normalization scale (divide by this value)
+# Default π works for most robots with joint limits ±π
+qpos_scale: 1.5
+
+# Per-joint qvel clip ranges (rad/s) - 99th percentile × 1.2 buffer
+# Format: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]
+
+# Relative position (tcp_to_red_pos) clip range in meters
+relative_pos_clip: 0.5
+
+# Which absolute positions to include in obs:
+# - [] or false: exclude all absolute positions
+# - ["tcp_pos"]: only include tcp_pos
+# - ["red_cube_pos"]: only include red_cube_pos
+# - ["tcp_pos", "red_cube_pos"] or true: include both
+# include_abs_pos: ["tcp_pos", "red_cube_pos"]
+include_abs_pos: false
+
+# How to include target_qpos:
+# - true: include target_qpos / qpos_scale
+# - false: exclude
+# - "relative": (target_qpos - qpos) / action_bounds
+# include_target_qpos: "relative"
+include_target_qpos: false
+
+# Action bounds for relative target_qpos normalization
+action_bounds: ${control.action_bounds}
+
+# Include is_grasped in observations (0/1 converted to -1/1)
+include_is_grasped: true
+
+# Include TCP orientation (quaternion, 4 values) in observations
+include_tcp_orientation: true
+
+# Include cube displacement relative to initial position
+include_cube_displacement: true

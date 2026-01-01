@@ -1,0 +1,32 @@
+# Observation configuration for Sort task (Left Arm Phase)
+# Both cubes visible, relative positions from left arm TCP
+
+enabled: true
+
+# qpos normalization scale
+qpos_scale: 1.5
+
+# Per-joint qvel clip ranges (rad/s)
+# Format: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]
+
+# Relative position clip range in meters
+relative_pos_clip: 0.5
+
+# Absolute positions (include all cubes for sort task)
+include_abs_pos: false
+
+# Target qpos (not used)
+include_target_qpos: false
+
+# Action bounds for relative target_qpos normalization
+action_bounds: ${control.action_bounds}
+
+# Include is_grasped (0/1 → -1/1)
+include_is_grasped: true
+
+# Include TCP orientation (quaternion)
+include_tcp_orientation: true
+
+# Include cube displacement
+include_cube_displacement: true

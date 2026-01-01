@@ -163,36 +163,49 @@ class SingleArmWrapper(gym.Wrapper):
     """Filters observation and maps action for single-arm tasks.
     
     Transforms a multi-arm environment into a single-arm one by:
-    1. Exposing only the right arm action space (as a Dict).
-    2. Filtering out left arm data from agent observations.
+    1. Exposing only the active arm's action space (as a Dict).
+    2. Filtering out inactive arm data from agent observations.
     
     Requires obs_mode='state_dict'.
+    
+    Args:
+        env: The environment to wrap
+        active_arm: Which arm to control - "left" or "right" (default: "right")
     """
-    def __init__(self, env, right_arm_key=None, left_arm_key=None):
+    def __init__(self, env, active_arm: str = "right"):
         super().__init__(env)
         
+        if active_arm not in ("left", "right"):
+            raise ValueError(f"active_arm must be 'left' or 'right', got '{active_arm}'")
+        
+        self.active_arm = active_arm
+        
         # Dynamic discovery of agent keys from the environment
-        if right_arm_key is None or left_arm_key is None:
-            # ManiSkill agent keys are usually sorted in the action space
-            # For dual-arm Track1, keys are ['uid-0', 'uid-1']
-            single_act_space = self.env.get_wrapper_attr("single_action_space")
-            all_keys = sorted(single_act_space.keys())
-            
-            if len(all_keys) >= 2:
-                # Standard dual-arm setup: left is index 0, right is index 1
-                left_arm_key = left_arm_key or all_keys[0]
-                right_arm_key = right_arm_key or all_keys[1]
-            elif len(all_keys) == 1:
-                # Single arm setup
-                right_arm_key = right_arm_key or all_keys[0]
-                left_arm_key = left_arm_key or "none"
-            else:
-                # Fallback to SO101 defaults if discovery fails
-                right_arm_key = right_arm_key or SO101.get_agent_key("right")
-                left_arm_key = left_arm_key or SO101.get_agent_key("left")
-            
-        self.right_arm_key = right_arm_key
-        self.left_arm_key = left_arm_key
+        # ManiSkill agent keys are usually sorted in the action space
+        # For dual-arm Track1, keys are ['uid-0', 'uid-1'] (left=0, right=1)
+        single_act_space = self.env.get_wrapper_attr("single_action_space")
+        all_keys = sorted(single_act_space.keys())
+        
+        if len(all_keys) >= 2:
+            # Standard dual-arm setup: left is index 0, right is index 1
+            self.left_arm_key = all_keys[0]
+            self.right_arm_key = all_keys[1]
+        elif len(all_keys) == 1:
+            # Single arm setup - only one arm available
+            self.left_arm_key = all_keys[0]
+            self.right_arm_key = all_keys[0]
+        else:
+            # Fallback to SO101 defaults if discovery fails
+            self.right_arm_key = SO101.get_agent_key("right")
+            self.left_arm_key = SO101.get_agent_key("left")
+        
+        # Set active and inactive keys based on active_arm selection
+        if active_arm == "left":
+            self.active_arm_key = self.left_arm_key
+            self.inactive_arm_key = self.right_arm_key
+        else:  # right
+            self.active_arm_key = self.right_arm_key
+            self.inactive_arm_key = self.left_arm_key
         
         from gymnasium.vector.utils import batch_space
         
@@ -200,13 +213,13 @@ class SingleArmWrapper(gym.Wrapper):
         assert self.base_env.obs_mode == "state_dict", f"SingleArmWrapper requires state_dict mode, got {self.base_env.obs_mode}"
         
         # Verify the discovery
-        if self.right_arm_key not in self.env.get_wrapper_attr("single_action_space").spaces:
-             raise KeyError(f"SingleArmWrapper: Discovered right_arm_key '{self.right_arm_key}' not found in action space. Available: {list(self.env.single_action_space.keys())}")
+        if self.active_arm_key not in self.env.get_wrapper_attr("single_action_space").spaces:
+             raise KeyError(f"SingleArmWrapper: Discovered active_arm_key '{self.active_arm_key}' not found in action space. Available: {list(self.env.single_action_space.keys())}")
         
-        # Keep Action Space as a Dict, but only with the right arm
+        # Keep Action Space as a Dict, but only with the active arm
         # This allows FlattenActionWrapper to handle the flattening and naming later
         self.single_action_space = gym.spaces.Dict({
-            self.right_arm_key: self.env.get_wrapper_attr("single_action_space")[self.right_arm_key]
+            self.active_arm_key: self.env.get_wrapper_attr("single_action_space")[self.active_arm_key]
         })
         self.action_space = batch_space(self.single_action_space, n=self.base_env.num_envs)
         
@@ -220,21 +233,21 @@ class SingleArmWrapper(gym.Wrapper):
         return self.env.unwrapped
 
     def _filter_obs(self, obs):
-        """Remove left arm from agent dict."""
-        if "agent" in obs and self.left_arm_key in obs["agent"]:
+        """Remove inactive arm from agent dict."""
+        if "agent" in obs and self.inactive_arm_key in obs["agent"]:
             agent_dict = obs["agent"]
-            filtered_agent = {self.right_arm_key: agent_dict[self.right_arm_key]}
+            filtered_agent = {self.active_arm_key: agent_dict[self.active_arm_key]}
             return {**obs, "agent": filtered_agent}
         return obs
 
     def action(self, action_dict):
-        """Map Filtered Dict Action (right arm only) to Full Multi-Agent Dict."""
+        """Map Filtered Dict Action (active arm only) to Full Multi-Agent Dict."""
         # This receives a dict from FlattenActionWrapper
-        right_action = action_dict[self.right_arm_key]
-        left_zeros = torch.zeros_like(right_action)
+        active_action = action_dict[self.active_arm_key]
+        inactive_zeros = torch.zeros_like(active_action)
         return {
-            self.right_arm_key: right_action,
-            self.left_arm_key: left_zeros
+            self.active_arm_key: active_action,
+            self.inactive_arm_key: inactive_zeros
         }
 
     def step(self, action):
@@ -522,8 +535,14 @@ def create_base_env(cfg: DictConfig, num_envs: int, for_eval: bool, env_kwargs: 
 def apply_wrappers(env, cfg: DictConfig, num_envs: int, for_eval: bool, video_dir: str = None):
     """Apply wrappers in correct order."""
     # 1. Single-arm logic (filters actions/obs)
-    if cfg.env.task in ["lift", "stack", "static_grasp"]:
-        env = SingleArmWrapper(env)
+    task = cfg.env.task
+    if task in ["lift", "stack", "static_grasp"]:
+        # Single-arm tasks default to right arm
+        env = SingleArmWrapper(env, active_arm="right")
+    elif task == "sort":
+        # Sort task: use active_arm from config (default: left for sort_left training)
+        active_arm = cfg.env.get("active_arm", "left")
+        env = SingleArmWrapper(env, active_arm=active_arm)
     
     # 2. Spaces flattening (required for training runner)
     env = FlattenActionWrapper(env)

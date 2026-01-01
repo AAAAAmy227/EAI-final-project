@@ -1,0 +1,73 @@
+# Dense reward configuration for Sort task (Left Arm Phase)
+# Left arm moves green cube to left grid
+reward_mode: "dense"
+reward_type: "parallel"
+
+# Reward weights
+weights:
+  approach: 1.0           # Approach green cube
+  grasp: 1.0              # Bonus for grasping
+  grasp_hold: 0.5         # Reward for stable grasp
+  place: 2.0              # Place green cube in left grid
+  keep_red_in_bounds: 0.0 # Penalty if red cube leaves mid (disabled by default)
+  action_rate: 0.0        # Action smoothness penalty
+  success: 2000.0         # Task completion bonus
+  fail: -1.0              # Penalty for cube falling
+
+# Fail condition: fail if red cube leaves mid-grid (disabled for exploration)
+fail_red_out_of_bounds: false
+
+# Grasp hold settings
+grasp_hold_max_steps: 100
+
+# Adaptive weights (all disabled by default)
+adaptive_grasp_weight:
+  enabled: false
+  alpha: 0.5
+  eps: 1e-8
+  max_weight: 100.0
+  tau: 0.0005
+
+gate_lift_with_grasp: false
+
+adaptive_lift_weight:
+  enabled: false
+  alpha: 0.5
+  eps: 1e-8
+  max_weight: 100.0
+  tau: 0.0005
+
+adaptive_success_weight:
+  enabled: false
+  alpha: 0.5
+  eps: 1e-8
+  max_weight: 100.0
+  tau: 0.0005
+
+# Approach reward curve
+approach_curve: "tanh"
+approach_mode: "tcp_midpoint"
+approach_threshold: 0.005
+approach_zero_point: 0.20
+approach_tanh_scale: 0.05
+
+# Place reward curve
+place_tanh_scale: 0.1   # Scale for distance to grid center
+
+# Horizontal displacement (not used in sort)
+horizontal_displacement_threshold: 0.05
+
+# Grasp detection
+grasp_min_force: 1.0
+grasp_max_angle: 110
+
+# Success/fail settings (not used like lift)
+lift_target: 0.0
+lift_max_height: 0.0
+stable_hold_time: 0.0
+
+# Stage thresholds (for reference)
+stages:
+  approach_threshold: 0.05
+  grasp_threshold: 0.03
+  lift_target: 0.0

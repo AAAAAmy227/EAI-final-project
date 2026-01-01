@@ -1,0 +1,60 @@
+# Track1 environment configuration for Sort task (Left Arm Phase)
+env_id: "Track1-v0"
+task: "sort"
+camera_mode: "direct_pinhole"
+obs_mode: "state_dict"
+include_state: true
+domain_randomization: false
+
+# Active arm for this training phase (left arm moves green cube)
+active_arm: "left"
+
+# Collision avoidance spawn: minimum distance between cubes
+min_cube_distance: 0.05  # 5cm
+
+# Robot URDF path
+robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
+
+# Simulation frequency
+sim_freq: 100
+control_freq: 20
+
+# Episode steps for sort task
+episode_steps:
+  base: 400       # Sort task requires more steps
+  multiplier: 1.5
+
+# Camera configuration
+camera:
+  extrinsic:
+    - [-0.999924, 0.012300, 0.000780, 0.319304]
+    - [0.012322, 0.999045, 0.041926, 0.269718]
+    - [-0.000264, 0.041932, -0.999120, 0.386226]
+    - [0.0, 0.0, 0.0, 1.0]
+  undistort_alpha: 0.25
+
+# Cube Physical Properties
+cube_physics:
+  mass: 0.1
+  static_friction: 0.3
+  dynamic_friction: 0.3
+  restitution: 0.0
+
+# Table Physical Properties
+table_physics:
+  static_friction: 0.3
+  dynamic_friction: 0.3
+  restitution: 0.0
+
+# Gripper Physical Properties
+gripper_physics:
+  static_friction: 2.0
+  dynamic_friction: 2.0
+  restitution: 0.0
+  patch_radius: 0.1
+  min_patch_radius: 0.1
+
+# Physics Solver
+solver:
+  position_iterations: 15
+  velocity_iterations: 1

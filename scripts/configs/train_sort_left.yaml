@@ -1,0 +1,87 @@
+# Training configuration for Sort task (Left Arm Phase)
+defaults:
+  - env: sort
+  - reward: sort_left
+  - control: single_arm  # Single arm at a time
+  - obs: sort_left
+  - _self_
+
+# Experiment settings
+exp_name: "sort_left"
+seed: 1
+device_id: 0
+
+# Logging
+wandb:
+  enabled: true
+  project: "Track1-PPO-sort"
+  entity: null
+
+# Optimization flags
+compile: true
+cudagraphs: true
+anneal_lr: true
+
+# Training hyperparameters
+training:
+  total_timesteps: 1_000_000_000
+  num_envs: 2048
+  num_eval_envs: 1
+  num_steps: 32
+  num_eval_steps: null
+  eval_step_multiplier: 1.0
+  eval_freq: 32
+  skip_eval: true
+
+# PPO hyperparameters
+ppo:
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  num_minibatches: 16
+  update_epochs: 5
+  clip_coef: 0.2
+  clip_vloss: false
+  norm_adv: true
+  ent_coef: 0.001
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.015
+  reward_scale: 1.0
+  handle_timeout_termination: true
+  logstd_init: -1.0
+  logstd_min: -10.0
+  logstd_max: 0.0
+
+# Model saving
+save_model: true
+capture_video: true
+checkpoint: null
+
+# Debugging/Monitoring
+log_obs_stats: true
+async_eval: false
+
+# Observation Normalization
+normalize_obs: true
+obs_norm_epsilon: 1e-8
+obs_clip: 10.0
+
+# Reward Normalization
+normalize_reward: true
+reward_norm_gamma: ${ppo.gamma}
+reward_norm_epsilon: 1e-8
+reward_clip: 1e10
+
+# Value Normalization
+value_normalization: false
+popart_beta: 0.0001
+
+# Recording Configuration
+recording:
+  save_video: true
+  save_trajectory: true
+  save_env_state: false
+  save_step_csv: true
+  info_on_video: true
+  video_fps: 30
