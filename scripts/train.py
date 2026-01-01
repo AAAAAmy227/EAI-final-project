@@ -18,7 +18,7 @@ from scripts.training.runner import PPORunner
 # Set float32 matmul precision for speed
 torch.set_float32_matmul_precision("high")
 
-@hydra.main(version_base=None, config_path="../configs", config_name="train")
+@hydra.main(version_base=None, config_path="./configs", config_name="train")
 def main(cfg: DictConfig):
     # Print config
     print(OmegaConf.to_yaml(cfg))
