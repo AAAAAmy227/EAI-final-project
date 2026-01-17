@@ -7,7 +7,7 @@ include_state: true
 domain_randomization: false  # Disable for faster training (enable for sim2real)
 
 # Robot URDF path (so101_new has fingertip auxiliary links for TCP calculation)
-robot_urdf: "/home/admin/Desktop/eai-final-project/grasp-cube-sample/grasp_cube/assets/robots/so101/so101_new/so101.urdf"
+robot_urdf: "/root/autodl-tmp/EAI-final-project/eai-2025-fall-final-project-reference-scripts/assets/SO101/so101.urdf"
 
 # Simulation frequency (must match real robot for sim2real)
 # Real robot data is 30 FPS

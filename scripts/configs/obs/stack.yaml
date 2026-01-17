@@ -1,0 +1,18 @@
+# Observation normalization for the Stack task
+# Extends single_arm but includes green cube absolute position so policy knows target location.
+
+qpos_scale: 1.5
+qvel_clip: [1.0, 2.5, 2.0, 1.0, 0.6, 1.5]
+relative_pos_clip: 0.5
+
+# Expose TCP, red cube, and green cube absolute positions (normalized)
+include_abs_pos: ["tcp_pos", "red_cube_pos", "green_cube_pos"]
+
+# Expose target_qpos if desired (kept disabled to match lift defaults)
+include_target_qpos: false
+
+action_bounds: ${control.action_bounds}
+
+include_is_grasped: true
+include_tcp_orientation: true
+include_cube_displacement: true

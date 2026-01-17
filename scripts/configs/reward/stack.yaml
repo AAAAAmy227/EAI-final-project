@@ -1,15 +1,42 @@
 # Dense reward configuration for Stack task
 reward_mode: "dense"
+reward_type: "parallel"
 
 weights:
-  reach_red: 1.0       # Approach red cube
-  grasp_red: 2.0       # Grasp red cube
-  lift_red: 3.0        # Lift red cube
-  reach_green: 1.0     # Move red cube toward green
-  place: 5.0           # Place red on green
-  success: 10.0        # Task completion
+  reach_red: 0.5        # Lower: keep it from drifting but shift focus downstream
+  grasp_red: 1.0        # Lower: avoid over-fixating on holding
+  lift_red: 5.0         # Higher: encourage vertical progress
+  align: 15.0           # Higher: strong pull over the green cube
+  place: 30.0           # Higher: drive precise stacking
+  success: 10000.0      # Larger terminal bonus
+  fail: -1.0            # Penalty for object drop/fail
+  action_rate: -0.05    # Smooth action changes
 
-reach_scale: 5.0
-grasp_threshold: 0.02
-stack_threshold: 0.03  # Red above green within this XY distance
-stack_height: 0.03     # Red needs to be this much above green
+approach_curve: "tanh"
+approach_mode: "tcp_midpoint"
+approach_tanh_scale: 0.08
+
+# Stack geometry
+stack_height_target: 0.03       # Desired red-green height gap (3cm)
+stack_height_tolerance: 0.005   # +/- tolerance on height gap
+stack_xy_tolerance: 0.015       # XY tolerance for stable stack
+stack_align_tanh_scale: 0.02    # Smoothing scale for XY alignment reward
+green_z_range: [0.010, 0.020]   # Green cube must stay on table
+
+# Grasp detection and gating
+grasp_min_force: 1.0
+grasp_max_angle: 110
+gate_lift_with_grasp: false
+
+# Episode timing
+stable_hold_time: 0.0
+
+# Spawn region for both cubes
+spawn_bounds:
+  x_min: 0.45
+  x_max: 0.50
+  y_min: 0.20
+  y_max: 0.30
+
+fail_bounds: null
+horizontal_displacement_threshold: 0.02

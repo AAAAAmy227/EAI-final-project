@@ -7,7 +7,7 @@ defaults:
   - _self_
 
 # Experiment settings
-exp_name: "lift"
+exp_name: "${env.task}"
 seed: 1
 device_id: 0  # GPU device ID for simulation and rendering (e.g., 0, 1, 2...)
 
@@ -30,8 +30,8 @@ training:
   num_steps: 32
   num_eval_steps: null
   eval_step_multiplier: 1.0
-  eval_freq: 32
-  skip_eval: true  # If true, save checkpoint without running eval (faster training)
+  eval_freq: 200000  # Run eval every 200k steps (reasonable for long training)
+  skip_eval: false  # Must be false to enable video generation
 
 # PPO hyperparameters
 ppo:

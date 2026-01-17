@@ -140,6 +140,11 @@ class Track1Env(BaseEnv):
         self.horizontal_displacement_threshold = rw_cfg.horizontal_displacement_threshold
         self.grasp_min_force = rw_cfg.grasp_min_force
         self.grasp_max_angle = rw_cfg.grasp_max_angle
+        self.stack_height_target = rw_cfg.stack_height_target
+        self.stack_height_tolerance = rw_cfg.stack_height_tolerance
+        self.stack_xy_tolerance = rw_cfg.stack_xy_tolerance
+        self.stack_align_tanh_scale = rw_cfg.stack_align_tanh_scale
+        self.green_z_range = rw_cfg.green_z_range
         
         self.adaptive_grasp_enabled = rw_cfg.adaptive_grasp_weight.enabled
         self.adaptive_grasp_alpha = rw_cfg.adaptive_grasp_weight.alpha

@@ -6,3 +6,11 @@ normalize_action: true
 ee_link: gripper_link
 pos_delta: 0.02      # meters per step
 delta_gripper: 0.2   # rad per step
+
+action_bounds:
+  shoulder_pan: 0.044    # ~2.5 degrees
+  shoulder_lift: 0.087   # ~5.0 degrees
+  elbow_flex: 0.070      # ~4.0 degrees
+  wrist_flex: 0.044      # ~2.5 degrees
+  wrist_roll: 0.026      # ~1.5 degrees
+  gripper: 0.070         # ~4.0 degrees

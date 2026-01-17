@@ -88,6 +88,11 @@ class RewardConfig:
     horizontal_displacement_threshold: float = 0.0
     grasp_min_force: float = 0.5
     grasp_max_angle: float = 110
+    stack_height_target: float = 0.03
+    stack_height_tolerance: float = 0.005
+    stack_xy_tolerance: float = 0.02
+    stack_align_tanh_scale: float = 0.03
+    green_z_range: List[float] = field(default_factory=lambda: [0.010, 0.020])
     adaptive_grasp_weight: AdaptiveWeightConfig = field(default_factory=AdaptiveWeightConfig)
     gate_lift_with_grasp: bool = False
     adaptive_lift_weight: AdaptiveWeightConfig = field(default_factory=AdaptiveWeightConfig)

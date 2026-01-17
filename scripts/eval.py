@@ -18,7 +18,7 @@ from omegaconf import DictConfig, OmegaConf
 torch.set_float32_matmul_precision("high")
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="train")
+@hydra.main(version_base=None, config_path="configs", config_name="train")
 def main(cfg: DictConfig):
     """Run evaluation on a checkpoint."""
     
@@ -75,7 +75,7 @@ def main(cfg: DictConfig):
     runner._evaluate()
     
     # Cleanup
-    runner.eval_envs.close()
+    runner.close() # Use close() instead of eval_envs.close() to trigger thread waiting
     print("\\nEvaluation complete!")
 
 

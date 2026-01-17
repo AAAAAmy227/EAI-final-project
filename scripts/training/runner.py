@@ -144,15 +144,69 @@ class PPORunner:
             fused=True,
             capturable=self.cudagraphs and not self.compile,
         )
+
+        # Normalization flags and wrappers (set before checkpoint loading so stats can be restored)
+        self.normalize_reward = self.cfg.get("normalize_reward", False)
+        self.reward_clip = self.cfg.get("reward_clip", 10.0)
+        self.normalize_obs = self.cfg.get("normalize_obs", False)
+        self.obs_clip = self.cfg.get("obs_clip", 10.0)
+        self.log_obs_stats = self.cfg.get("log_obs_stats", False)
+
+        if self.normalize_reward:
+            # Only wrap if envs exists (skip for eval_only)
+            if self.envs is not None:
+                from scripts.training.env_utils import NormalizeRewardGPU
+                self.envs = NormalizeRewardGPU(
+                    self.envs, device=self.device, gamma=self.cfg.ppo.gamma, clip=self.reward_clip
+                )
+                print(f"Running Reward Normalization enabled (gamma={self.cfg.ppo.gamma}, clip={self.reward_clip})")
+
+        if self.normalize_obs:
+            from scripts.training.env_utils import NormalizeObservationGPU
+            # Only wrap if envs exists (skip for eval_only)
+            if self.envs is not None:
+                self.envs = NormalizeObservationGPU(
+                    self.envs, device=self.device, clip=self.obs_clip
+                )
+                print(f"Running Observation Normalization enabled (clip={self.obs_clip})")
+            
+            # Wrap Eval Envs with separate rms instance; stats will be synced before eval or loaded from checkpoint
+            self.eval_envs = NormalizeObservationGPU(
+                self.eval_envs, device=self.device, clip=self.obs_clip
+            )
+            self.eval_envs.update_rms = False
         
         if cfg.checkpoint:
             print(f"Loading checkpoint from {cfg.checkpoint}")
             ckpt = torch.load(cfg.checkpoint, map_location=self.device)
             self.agent.load_state_dict(ckpt["agent"])
-            if self.normalize_obs and "obs_ema_mean" in ckpt:
-                self.obs_ema_mean.copy_(ckpt["obs_ema_mean"])
-                self.obs_ema_var.copy_(ckpt["obs_ema_var"])
-                print("Loaded observation normalization statistics from checkpoint.")
+
+            # Restore normalization stats if present
+            from scripts.training.env_utils import NormalizeObservationGPU, NormalizeRewardGPU, find_wrapper
+            if self.normalize_obs:
+                # If we have training envs, restore to them
+                if self.envs is not None:
+                    obs_wrapper = find_wrapper(self.envs, NormalizeObservationGPU)
+                    if obs_wrapper is not None and "obs_rms_mean" in ckpt:
+                        obs_wrapper.rms.mean.copy_(ckpt["obs_rms_mean"])
+                        obs_wrapper.rms.var.copy_(ckpt["obs_rms_var"])
+                        obs_wrapper.rms.count = ckpt.get("obs_rms_count", obs_wrapper.rms.count)
+                
+                # ALWAYS restore to eval envs if present (crucial for eval_only mode)
+                eval_obs_wrapper = find_wrapper(self.eval_envs, NormalizeObservationGPU)
+                if eval_obs_wrapper is not None and "obs_rms_mean" in ckpt:
+                    eval_obs_wrapper.rms.mean.copy_(ckpt["obs_rms_mean"])
+                    eval_obs_wrapper.rms.var.copy_(ckpt["obs_rms_var"])
+                    eval_obs_wrapper.rms.count = ckpt.get("obs_rms_count", eval_obs_wrapper.rms.count)
+                    print("Restored observation normalization stats to eval envs from checkpoint.")
+
+            if self.normalize_reward and self.envs is not None:
+                reward_wrapper = find_wrapper(self.envs, NormalizeRewardGPU)
+                if reward_wrapper is not None and "return_rms_mean" in ckpt:
+                    reward_wrapper.rms.mean.copy_(ckpt["return_rms_mean"])
+                    reward_wrapper.rms.var.copy_(ckpt["return_rms_var"])
+                    reward_wrapper.rms.count = ckpt.get("return_rms_count", reward_wrapper.rms.count)
+
             if self.cudagraphs:
                 from_module(self.agent).data.to_module(self.agent_inference)
         
@@ -176,36 +230,6 @@ class PPORunner:
             print(f"Warning: obs_names count ({len(self.obs_names)}) does not match n_obs ({self.n_obs}).")
             self.obs_names = [f"obs_{i}" for i in range(self.n_obs)]
 
-        # Running Reward Normalization
-        self.normalize_reward = self.cfg.get("normalize_reward", False)
-        self.reward_clip = self.cfg.get("reward_clip", 10.0)
-        if self.normalize_reward:
-            from scripts.training.env_utils import NormalizeRewardGPU
-            self.envs = NormalizeRewardGPU(
-                self.envs, device=self.device, gamma=self.cfg.ppo.gamma, clip=self.reward_clip
-            )
-            print(f"Running Reward Normalization enabled (gamma={self.cfg.ppo.gamma}, clip={self.reward_clip})")
-        
-        # Observation statistics logging and normalization
-        self.log_obs_stats = self.cfg.get("log_obs_stats", False)
-        self.normalize_obs = self.cfg.get("normalize_obs", False)
-        self.obs_clip = self.cfg.get("obs_clip", 10.0)
-        if self.normalize_obs:
-            from scripts.training.env_utils import NormalizeObservationGPU
-            self.envs = NormalizeObservationGPU(
-                self.envs, device=self.device, clip=self.obs_clip
-            )
-            print(f"Running Observation Normalization enabled (clip={self.obs_clip})")
-            
-            # Wrap Eval Envs with separate rms instance
-            # Stats will be synced from training via _sync_eval_obs_stats() before eval
-            # This avoids race conditions during async eval (shared instance would be updated by training)
-            self.eval_envs = NormalizeObservationGPU(
-                self.eval_envs, device=self.device, clip=self.obs_clip
-            )
-            self.eval_envs.update_rms = False  # Never update stats during eval
-
-        
         print(f"Observation names for logging (count: {len(self.obs_names)})")
         
         # Reward mode for logging
@@ -528,7 +552,18 @@ class PPORunner:
             training_time += time.time() - iter_start_time
             
             # Evaluation or just save checkpoint
-            if iteration % self.cfg.training.eval_freq == 0:
+            # Handle eval_freq as steps if > 1000 (typical for step-based freq), else as iterations
+            should_eval = False
+            if self.cfg.training.eval_freq > 1000:
+                # Check if we crossed a multiple of eval_freq
+                prev_step = self.global_step - self.batch_size
+                if (prev_step // self.cfg.training.eval_freq) != (self.global_step // self.cfg.training.eval_freq):
+                    should_eval = True
+            else:
+                if iteration % self.cfg.training.eval_freq == 0:
+                    should_eval = True
+
+            if should_eval:
                 if self.cfg.training.get("skip_eval", False):
                     # Skip eval, just save checkpoint
                     self._save_checkpoint(iteration)
@@ -1057,3 +1092,24 @@ class PPORunner:
         
         thread = threading.Thread(target=split_task, daemon=True)
         thread.start()
+        # Keep track of threads to join them on exit
+        if not hasattr(self, "_video_threads"):
+            self._video_threads = []
+        self._video_threads.append(thread)
+        
+        # Clean up finished threads
+        self._video_threads = [t for t in self._video_threads if t.is_alive()]
+
+    def close(self):
+        """Close environments and wait for video processing."""
+        if self.envs:
+            self.envs.close()
+        if self.eval_envs:
+            self.eval_envs.close()
+            
+        # Wait for video processing threads
+        if hasattr(self, "_video_threads") and self._video_threads:
+            print(f"Waiting for {len(self._video_threads)} video processing threads to finish...")
+            for t in self._video_threads:
+                t.join(timeout=60) # 1 minute timeout per thread
+            print("Video processing threads finished.")
