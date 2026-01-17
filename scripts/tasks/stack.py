@@ -98,6 +98,9 @@ class StackTaskHandler(BaseTaskHandler):
         # 1. Reach red cube
         dist_to_red = torch.norm(tcp_pos - red_pos, dim=1)
         reach_reward = 1.0 - torch.tanh(dist_to_red / self.env.approach_tanh_scale)
+        
+        # 1.5 Fine Reach: precise guidance when close to object
+        fine_reach = 1.0 - torch.tanh(dist_to_red / 0.01)
 
         # 2. Grasp red cube using contact-based detection
         is_grasped = agent.is_grasping(
@@ -146,6 +149,7 @@ class StackTaskHandler(BaseTaskHandler):
 
         reward = (
             w.get("reach_red", 0.0) * reach_reward
+            + w.get("fine_reach", 0.0) * fine_reach
             + w.get("grasp_red", 0.0) * grasp_reward
             + w.get("lift_red", 0.0) * lift_progress
             + w.get("align", 0.0) * align_reward
@@ -157,6 +161,7 @@ class StackTaskHandler(BaseTaskHandler):
 
         reward_info = {
             "reward/reach_red": w.get("reach_red", 0.0) * reach_reward,
+            "reward/fine_reach": w.get("fine_reach", 0.0) * fine_reach,
             "reward/grasp_red": w.get("grasp_red", 0.0) * grasp_reward,
             "reward/lift_red": w.get("lift_red", 0.0) * lift_progress,
             "reward/align": w.get("align", 0.0) * align_reward,

@@ -918,7 +918,7 @@ class PPORunner:
         if log_step is None:
             log_step = self.global_step
             
-        print("Running eval uation...")
+        print("Running evaluation...")
         
         # Flush video wrapper state
         self.eval_envs.get_wrapper_attr("call")("flush_video", save=False)
