@@ -11,8 +11,8 @@ robot_urdf: "/root/autodl-tmp/EAI-final-project/eai-2025-fall-final-project-refe
 
 # Simulation frequency (must match real robot for sim2real)
 # Real robot data is 30 FPS
-sim_freq: 100       # Physics simulation frequency (Hz)
-control_freq: 20    # Control frequency (Hz) - MUST match real data (30 Hz)
+sim_freq: 240       # Physics simulation frequency (Hz)
+control_freq: 30    # Control frequency (Hz) - MUST match real data (30 Hz)
 
 # Max episode steps based on trajectory analysis
 # Formula: base_steps * multiplier + stable_hold_steps (from reward config)

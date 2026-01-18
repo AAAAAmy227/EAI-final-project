@@ -448,6 +448,12 @@ class Track1Env(BaseEnv):
                 if self.obs_normalize_enabled:
                     green_disp = torch.clamp(green_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
                 obs["green_cube_displacement"] = green_disp
+        else:
+            # Pad with zeros for compatibility with Stack task trained agents
+            # This allows fine-tuning a Stack policy on Lift task
+            obs["green_cube_rot"] = torch.zeros((self.num_envs, 4), device=self.device)
+            if self.include_cube_displacement:
+                obs["green_cube_displacement"] = torch.zeros((self.num_envs, 3), device=self.device)
 
         # 2. End-Effector (TCP) State (Right Arm) - using agent.tcp_pos (fingertip midpoint)
         agent = self.right_arm
@@ -478,12 +484,15 @@ class Track1Env(BaseEnv):
         obs["tcp_to_red_pos"] = tcp_to_red
         
         # Red to Green (for stack task)
-        if self.task == "stack" and green_cube_pos is not None:
+        # Always output if green_cube is missing (padded) to maintain shape consistency
+        if green_cube_pos is not None:
             red_to_green = green_cube_pos - red_cube_pos
             if self.obs_normalize_enabled:
                 clip_val = self.relative_pos_clip
                 red_to_green = torch.clamp(red_to_green, -clip_val, clip_val) / clip_val
             obs["red_to_green_pos"] = red_to_green
+        elif self.task != "sort": # Default to padding for Lift/Stack compatibility (exclude Sort which is dual arm)
+             obs["red_to_green_pos"] = torch.zeros((self.num_envs, 3), device=self.device)
         
         # 4. Absolute positions (controlled by include_abs_pos: list, bool, or false)
         # Convert to list for uniform handling
@@ -505,11 +514,14 @@ class Track1Env(BaseEnv):
             else:
                 obs["red_cube_pos"] = red_cube_pos
                 
-        if "green_cube_pos" in abs_pos_list and green_cube_pos is not None:
-            if self.obs_normalize_enabled:
-                obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
+        if "green_cube_pos" in abs_pos_list:
+            if green_cube_pos is not None:
+                if self.obs_normalize_enabled:
+                    obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
+                else:
+                    obs["green_cube_pos"] = green_cube_pos
             else:
-                obs["green_cube_pos"] = green_cube_pos
+                obs["green_cube_pos"] = torch.zeros((self.num_envs, 3), device=self.device)
             
         return obs
 
