@@ -83,6 +83,7 @@ def main(cfg: DictConfig):
     # Start Training
     try:
         runner.train()
+        runner.close()
     except KeyboardInterrupt:
         print("Training interrupted by user.")
         runner.envs.close()

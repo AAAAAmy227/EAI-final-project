@@ -218,22 +218,22 @@ class SO101(BaseAgent):
             arm_joint_names,
             pos_lower=-0.02,
             pos_upper=0.02,
-            stiffness=[1e3] * 5,
-            damping=[1e2] * 5,
+            stiffness=[800] * 5,
+            damping=[80] * 5,
             force_limit=100,
-            ee_link="gripper_link",
+            ee_link="gripper_frame_link",
             urdf_path=self.urdf_path,
             use_delta=True,
-            use_target=True,
+            use_target=False,
             normalize_action=True,
         )
         
         gripper_pd_joint_delta_pos = PDJointPosControllerConfig(
             gripper_joint_names,
-            lower=[-0.2],
-            upper=[0.2],
-            stiffness=[1e3],
-            damping=[1e2],
+            lower=[-0.1],
+            upper=[0.1],
+            stiffness=[800],
+            damping=[80],
             force_limit=100,
             use_delta=True,
             normalize_action=True,
@@ -263,9 +263,14 @@ class SO101(BaseAgent):
             self.finger1_tip = self.robot.links_map["gripper_link_tip"]
             self.finger2_tip = self.robot.links_map["moving_jaw_so101_v1_link_tip"]
         except KeyError:
-            logger.warning("Fingertip links not found. TCP calculation will fall back to gripper links.")
-            self.finger1_tip = self.finger1_link
-            self.finger2_tip = self.finger2_link
+            if "gripper_frame_link" in self.robot.links_map:
+                # Use gripper_frame_link as valid TCP (it has ~10cm offset from wrist)
+                self.finger1_tip = self.robot.links_map["gripper_frame_link"]
+                self.finger2_tip = self.robot.links_map["gripper_frame_link"]
+            else:
+                logger.warning("Fingertip links not found. TCP calculation will fall back to gripper links.")
+                self.finger1_tip = self.finger1_link
+                self.finger2_tip = self.finger2_link
 
     @property
     def tcp_pos(self):

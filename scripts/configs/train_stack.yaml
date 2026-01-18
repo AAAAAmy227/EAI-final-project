@@ -1,0 +1,77 @@
+# PPO training configuration for the stack task
+
+defaults:
+  - env: stack
+  - reward: stack
+  - control: single_arm
+  - obs: stack
+  - _self_
+
+exp_name: "stack"
+seed: 1
+device_id: 0
+
+wandb:
+  enabled: true
+  project: "Track1-PPO-stack"
+  entity: null
+
+compile: true
+cudagraphs: true
+anneal_lr: true
+
+training:
+  total_timesteps: 1_000_000_000
+  num_envs: 2048
+  num_eval_envs: 1
+  num_steps: 64
+  num_eval_steps: null
+  eval_step_multiplier: 1.0
+  eval_freq: 500000
+  skip_eval: false
+
+ppo:
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  num_minibatches: 16
+  update_epochs: 5
+  clip_coef: 0.2
+  clip_vloss: false
+  norm_adv: true
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.010
+  reward_scale: 1.0
+  handle_timeout_termination: true
+  logstd_init: -1.0
+  logstd_min: -10.0
+  logstd_max: 0.0
+
+save_model: true
+capture_video: true
+checkpoint: null
+
+log_obs_stats: true
+async_eval: false
+
+normalize_obs: true
+obs_norm_epsilon: 1e-8
+obs_clip: 10.0
+
+normalize_reward: true
+reward_norm_gamma: $(ppo.gamma)
+reward_norm_epsilon: 1e-8
+reward_clip: 1e10
+
+value_normalization: false
+popart_beta: 0.0001
+
+recording:
+  save_video: true
+  save_trajectory: true
+  save_env_state: false
+  save_step_csv: true
+  info_on_video: true
+  video_fps: 30

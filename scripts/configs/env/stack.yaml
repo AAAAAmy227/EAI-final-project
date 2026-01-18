@@ -1,0 +1,48 @@
+# Track1 environment configuration for stack task
+env_id: "Track1-v0"
+task: "stack"
+camera_mode: "direct_pinhole"
+obs_mode: "state_dict"
+include_state: true
+domain_randomization: false
+
+robot_urdf: "/root/autodl-tmp/EAI-final-project/eai-2025-fall-final-project-reference-scripts/assets/SO101/so101.urdf"
+
+sim_freq: 240
+control_freq: 30
+
+# Max episode steps based on trajectory analysis for stack (3cm cubes)
+# Base 384 steps at 30 Hz, with exploration buffer via multiplier
+episode_steps:
+  base: 384
+  multiplier: 1.5
+
+camera:
+  extrinsic:
+    - [-0.999924, 0.012300, 0.000780, 0.319304]
+    - [0.012322, 0.999045, 0.041926, 0.269718]
+    - [-0.000264, 0.041932, -0.999120, 0.386226]
+    - [0.0, 0.0, 0.0, 1.0]
+  undistort_alpha: 0.25
+
+cube_physics:
+  mass: 0.1
+  static_friction: 0.3
+  dynamic_friction: 0.3
+  restitution: 0.0
+
+table_physics:
+  static_friction: 0.3
+  dynamic_friction: 0.3
+  restitution: 0.0
+
+gripper_physics:
+  static_friction: 2.0
+  dynamic_friction: 2.0
+  restitution: 0.0
+  patch_radius: 0.1
+  min_patch_radius: 0.1
+
+solver:
+  position_iterations: 25
+  velocity_iterations: 1

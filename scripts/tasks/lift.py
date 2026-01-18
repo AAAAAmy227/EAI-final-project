@@ -18,9 +18,9 @@ class LiftTaskHandler(BaseTaskHandler):
         """Define Lift task metrics for training."""
         return {
             "reward/approach": "mean",
+            "reward/fine_reach": "mean",
             "reward/grasp": "mean",
-            "reward/grasp_hold": "mean",
-            "reward/horizontal_displacement": "mean",
+            "reward/gripper_close": "mean",
             "reward/lift": "mean",
             "reward/hold_progress": "mean",
             "reward/action_rate": "mean",
@@ -46,18 +46,13 @@ class LiftTaskHandler(BaseTaskHandler):
             self.initial_cube_xy = torch.zeros((self.env.num_envs, 2), device=self.device)
         self.initial_cube_xy[env_idx] = red_pos[:, :2]
         
+        # Reset prev_action for action rate penalty (shape will be set lazily in compute_dense_reward)
+        self.prev_action = None
+
         # Reset stable hold counter for success condition
         if self.lift_hold_counter is None:
             self.lift_hold_counter = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.int32)
         self.lift_hold_counter[env_idx] = 0
-        
-        # Reset grasp hold counter
-        if self.grasp_hold_counter is None:
-            self.grasp_hold_counter = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.int32)
-        self.grasp_hold_counter[env_idx] = 0
-        
-        # Reset prev_action for action rate penalty
-        self.prev_action = None
 
     def evaluate(self) -> Dict[str, torch.Tensor]:
         """Lift: red cube >= lift_target AND is_grasped for stable_hold_time seconds."""
@@ -162,14 +157,9 @@ class LiftTaskHandler(BaseTaskHandler):
             approach_reward = compute_approach_reward(distance, threshold, zero_point)
             approach2_reward = torch.zeros_like(approach_reward)
         
-        # 3. Horizontal displacement
-        if self.initial_cube_xy is not None:
-            raw_displacement = torch.norm(cube_pos[:, :2] - self.initial_cube_xy, dim=1)
-            threshold = self.env.horizontal_displacement_threshold
-            horizontal_displacement = torch.clamp(raw_displacement - threshold, min=0.0)
-            horizontal_displacement = horizontal_displacement * (~is_grasped).float()
-        else:
-            horizontal_displacement = torch.zeros(self.env.num_envs, device=self.device)
+        # 1.5 Fine Reach: precise guidance when close to object
+        # Using distance computed above
+        fine_reach = 1.0 - torch.tanh(distance / 0.01)
         
         # 4. Lift reward
         cube_baseline_height = 0.015
@@ -179,18 +169,17 @@ class LiftTaskHandler(BaseTaskHandler):
         else:
             lift_reward = torch.clamp(lift_height, min=0.0)
         
-        # 5. Action rate penalty
-        if action is not None and w.get("action_rate", 0.0) != 0:
+        # 5. Action rate penalty (lazily align shapes to current action tensor)
+        if action is not None:
             if isinstance(action, dict):
                 action_tensor = torch.cat([v.flatten(start_dim=1) for v in action.values()], dim=1)
             else:
                 action_tensor = action.flatten(start_dim=1) if action.dim() > 1 else action.unsqueeze(0)
             
-            if self.prev_action is None:
-                action_rate = torch.zeros(self.env.num_envs, device=self.device)
-            else:
-                action_diff = action_tensor - self.prev_action
-                action_rate = torch.sum(action_diff ** 2, dim=1)
+            if self.prev_action is None or self.prev_action.shape != action_tensor.shape:
+                self.prev_action = torch.zeros_like(action_tensor)
+            action_diff = action_tensor - self.prev_action
+            action_rate = torch.sum(action_diff ** 2, dim=1)
             self.prev_action = action_tensor.clone()
         else:
             action_rate = torch.zeros(self.env.num_envs, device=self.device)
@@ -230,22 +219,23 @@ class LiftTaskHandler(BaseTaskHandler):
         # 8. Grasp reward
         grasp_reward = is_grasped.float()
         
-        # 8.5 Grasp hold reward
-        if hasattr(self.env, 'grasp_hold_max_steps') and self.env.grasp_hold_max_steps > 0:
-            if self.grasp_hold_counter is None:
-                self.grasp_hold_counter = torch.zeros(self.env.num_envs, device=self.device, dtype=torch.int32)
-            
-            self.grasp_hold_counter = torch.where(
-                is_grasped,
-                self.grasp_hold_counter + 1,
-                torch.zeros_like(self.grasp_hold_counter)
-            )
-            
-            current_count = torch.clamp(self.grasp_hold_counter, max=self.env.grasp_hold_max_steps)
-            T = float(self.env.grasp_hold_max_steps)
-            grasp_hold_reward = (2.0 * current_count.float()) / (T + 1.0)
+        # 8.2 Anti-Bow Penalty (from Stack task)
+        # Penalize if wrist joint (gripper_link) is lower than fingertips (tcp_pos) when grasping
+        wrist_pos = agent.robot.get_links()[5].pose.p
+        tcp_pos_curr = agent.tcp_pos
+        wrist_height_diff = wrist_pos[:, 2] - tcp_pos_curr[:, 2] 
+        anti_bow_penalty = torch.relu(-wrist_height_diff) 
+        
+        # Only apply when close to object
+        close_mask = (distance < 0.05).float()
+        grasp_reward = grasp_reward - (1.0 * anti_bow_penalty * close_mask)
+        
+        # 8.3 Gripper close reward
+        if action is not None and isinstance(action, dict) and 'gripper' in action:
+            gripper_action = action['gripper'][:, 0]
+            gripper_close_reward = torch.relu(-gripper_action)  # Reward for closing (negative) actions
         else:
-            grasp_hold_reward = torch.zeros(self.env.num_envs, device=self.device)
+            gripper_close_reward = torch.zeros(self.env.num_envs, device=self.device)
         
         # Adaptive grasp weight
         if self.env.adaptive_grasp_enabled and not self.env.eval_mode:
@@ -295,9 +285,9 @@ class LiftTaskHandler(BaseTaskHandler):
         # Weighted sum
         reward = (w["approach"] * approach_reward +
                   w["approach"] * approach2_reward +
+                  w.get("fine_reach", 0.0) * fine_reach +
                   dynamic_grasp_weight * grasp_reward +
-                  w.get("grasp_hold", 0.0) * grasp_hold_reward +
-                  w["horizontal_displacement"] * horizontal_displacement +
+                  w.get("gripper_close", 0.0) * gripper_close_reward +
                   dynamic_lift_weight * effective_lift_reward + 
                   w.get("hold_progress", 0.0) * effective_hold_progress +
                   w.get("action_rate", 0.0) * action_rate +
@@ -309,9 +299,9 @@ class LiftTaskHandler(BaseTaskHandler):
         # 1. Detailed reward components for training logging (flattened for Runner)
         reward_info = {
             "reward/approach": (w["approach"] * approach_reward + w["approach"] * approach2_reward),
+            "reward/fine_reach": (w.get("fine_reach", 0.0) * fine_reach),
             "reward/grasp": (dynamic_grasp_weight * grasp_reward),
-            "reward/grasp_hold": (w.get("grasp_hold", 0.0) * grasp_hold_reward),
-            "reward/horizontal_displacement": (w["horizontal_displacement"] * horizontal_displacement),
+            "reward/gripper_close": (w.get("gripper_close", 0.0) * gripper_close_reward),
             "reward/lift": (dynamic_lift_weight * effective_lift_reward),
             "reward/hold_progress": (w.get("hold_progress", 0.0) * effective_hold_progress),
             "reward/action_rate": (w.get("action_rate", 0.0) * action_rate),
@@ -323,8 +313,7 @@ class LiftTaskHandler(BaseTaskHandler):
         info["reward_components"] = {
             "approach": reward_info["reward/approach"].mean(),
             "grasp": reward_info["reward/grasp"].mean(),
-            "grasp_hold": reward_info["reward/grasp_hold"].mean(),
-            "horizontal_displacement": reward_info["reward/horizontal_displacement"].mean(),
+            "gripper_close": reward_info["reward/gripper_close"].mean(),
             "lift": reward_info["reward/lift"].mean(),
             "hold_progress": reward_info["reward/hold_progress"].mean(),
             "action_rate": reward_info["reward/action_rate"].mean(),
@@ -334,8 +323,7 @@ class LiftTaskHandler(BaseTaskHandler):
             info["reward_components_per_env"] = {
                 "approach": w["approach"] * approach_reward,
                 "grasp": dynamic_grasp_weight * grasp_reward,
-                "grasp_hold": w.get("grasp_hold", 0.0) * grasp_hold_reward,
-                "horizontal_displacement": w["horizontal_displacement"] * horizontal_displacement,
+                "gripper_close": w.get("gripper_close", 0.0) * gripper_close_reward,
                 "lift": dynamic_lift_weight * effective_lift_reward,
                 "hold_progress": w.get("hold_progress", 0.0) * effective_hold_progress,
                 "action_rate": w.get("action_rate", 0.0) * action_rate,

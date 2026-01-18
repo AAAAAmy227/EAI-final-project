@@ -6,18 +6,15 @@ reward_type: "parallel"
 
 # Reward weights (use negative for penalty)
 weights:
-  approach: 1.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
-  grasp: 1.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
-  grasp_hold: 1.0       # Reward for stable grasp, grows linearly with consecutive grasp steps
-  horizontal_displacement: 0.0  # Penalize cube XY displacement from initial position
-  lift: 1.0           # Lift cube up (height in meters, scaled up)
+  approach: 2.0        # Approach cube (TCP midpoint or both jaw points in dual_point mode)
+  fine_reach: 0.5      # Sharp local guidance (1cm) to center TCP exactly.
+  # grasp: 2.0           # Bonus for successfully grasping the cube (binary, base weight if adaptive)
+  gripper_close: 4.0   # Reward for gripper closing actions (negative gripper commands)
+  lift: 20.0           # Lift cube up (height in meters, scaled up)
   hold_progress: 1.0  # Reward for holding cube at lift_target height, proportional to hold time (0~1)
   action_rate: 0  # Penalize action changes (anti-jitter), range ~[0, 0.2]
   success: 2000.0        # Task completion bonus
   fail: -1.0         # Penalty when cube goes out of bounds
-
-# Grasp hold settings: reward stability of grasp
-grasp_hold_max_steps: 100  # Steps to reach full reward (1 second at 30Hz)
 
 # Adaptive grasp weight: dynamically scale grasp reward by inverse success rate
 # Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
@@ -31,7 +28,7 @@ adaptive_grasp_weight:
 
 # Gated lift reward: only give lift reward when is_grasped=True
 # This prevents the agent from pushing the cube up without grasping it
-gate_lift_with_grasp: true
+gate_lift_with_grasp: True
 
 # Adaptive lift weight: dynamically scale lift reward by inverse success rate
 # Formula: dynamic_weight = base_weight * (1 / (success_rate + eps))^alpha
@@ -92,7 +89,7 @@ approach2_zero_point: 0.20     # Distance where reward becomes 0 (20cm)
 lift_max_height: 0.10        # Cap lift reward at 10cm (no reward increase above this)
 
 # Grasp detection parameters (for is_grasping reward gating)
-grasp_min_force: 1.0         # Minimum contact force in Newtons to count as grasping
+grasp_min_force: 0.1         # Minimum contact force in Newtons to count as grasping
 grasp_max_angle: 110         # Maximum angle (degrees) between contact force and gripper opening direction
 
 # Success condition: cube must stay >= lift_target for stable_hold_time seconds

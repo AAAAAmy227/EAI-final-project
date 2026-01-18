@@ -140,6 +140,11 @@ class Track1Env(BaseEnv):
         self.horizontal_displacement_threshold = rw_cfg.horizontal_displacement_threshold
         self.grasp_min_force = rw_cfg.grasp_min_force
         self.grasp_max_angle = rw_cfg.grasp_max_angle
+        self.stack_height_target = rw_cfg.stack_height_target
+        self.stack_height_tolerance = rw_cfg.stack_height_tolerance
+        self.stack_xy_tolerance = rw_cfg.stack_xy_tolerance
+        self.stack_align_tanh_scale = rw_cfg.stack_align_tanh_scale
+        self.green_z_range = rw_cfg.green_z_range
         
         self.adaptive_grasp_enabled = rw_cfg.adaptive_grasp_weight.enabled
         self.adaptive_grasp_alpha = rw_cfg.adaptive_grasp_weight.alpha
@@ -289,6 +294,18 @@ class Track1Env(BaseEnv):
                 ),
             )
         
+        # Third-person view camera
+        side_pose = sapien_utils.look_at(eye=[0.3, 0.8, 0.2], target=[0.3, 0, 0], up=[0, 0, 1])
+        side_camera = CameraConfig(
+            "side_camera",
+            pose=side_pose,
+            width=self.front_render_width,
+            height=self.front_render_height,
+            intrinsic=self.render_intrinsic,
+            near=0.01,
+            far=100,
+        )
+
         # Determine resolution and intrinsic based on camera_mode
         if self.camera_mode == "direct_pinhole":
             return [
@@ -301,6 +318,7 @@ class Track1Env(BaseEnv):
                     near=0.01,
                     far=100,
                 ),
+                side_camera,
             ]
         else:
             # High-res source for distortion pipeline using scaled intrinsic
@@ -314,6 +332,7 @@ class Track1Env(BaseEnv):
                     near=0.01,
                     far=100,
                 ),
+                side_camera,
             ]
 
     def _setup_sensors(self, options: dict):
@@ -437,6 +456,12 @@ class Track1Env(BaseEnv):
                 if self.obs_normalize_enabled:
                     green_disp = torch.clamp(green_disp, -self.relative_pos_clip, self.relative_pos_clip) / self.relative_pos_clip
                 obs["green_cube_displacement"] = green_disp
+        else:
+            # Pad with zeros for compatibility with Stack task trained agents
+            # This allows fine-tuning a Stack policy on Lift task
+            obs["green_cube_rot"] = torch.zeros((self.num_envs, 4), device=self.device)
+            if self.include_cube_displacement:
+                obs["green_cube_displacement"] = torch.zeros((self.num_envs, 3), device=self.device)
 
         # 2. End-Effector (TCP) State - using active arm based on task
         # For sort task: use configured active_arm; for other tasks: use right arm
@@ -481,12 +506,15 @@ class Track1Env(BaseEnv):
             obs["tcp_to_green_pos"] = tcp_to_green
         
         # Red to Green (for stack task)
-        if self.task == "stack" and green_cube_pos is not None:
+        # Always output if green_cube is missing (padded) to maintain shape consistency
+        if green_cube_pos is not None:
             red_to_green = green_cube_pos - red_cube_pos
             if self.obs_normalize_enabled:
                 clip_val = self.relative_pos_clip
                 red_to_green = torch.clamp(red_to_green, -clip_val, clip_val) / clip_val
             obs["red_to_green_pos"] = red_to_green
+        elif self.task != "sort": # Default to padding for Lift/Stack compatibility (exclude Sort which is dual arm)
+             obs["red_to_green_pos"] = torch.zeros((self.num_envs, 3), device=self.device)
         
         # 4. Absolute positions (controlled by include_abs_pos: list, bool, or false)
         # Convert to list for uniform handling
@@ -508,11 +536,14 @@ class Track1Env(BaseEnv):
             else:
                 obs["red_cube_pos"] = red_cube_pos
                 
-        if "green_cube_pos" in abs_pos_list and green_cube_pos is not None:
-            if self.obs_normalize_enabled:
-                obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
+        if "green_cube_pos" in abs_pos_list:
+            if green_cube_pos is not None:
+                if self.obs_normalize_enabled:
+                    obs["green_cube_pos"] = normalize_pos(green_cube_pos, self.green_cube_pos_norm)
+                else:
+                    obs["green_cube_pos"] = green_cube_pos
             else:
-                obs["green_cube_pos"] = green_cube_pos
+                obs["green_cube_pos"] = torch.zeros((self.num_envs, 3), device=self.device)
             
         return obs
 
