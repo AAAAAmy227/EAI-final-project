@@ -286,6 +286,18 @@ class Track1Env(BaseEnv):
                 ),
             )
         
+        # Third-person view camera
+        side_pose = sapien_utils.look_at(eye=[0.3, 0.8, 0.2], target=[0.3, 0, 0], up=[0, 0, 1])
+        side_camera = CameraConfig(
+            "side_camera",
+            pose=side_pose,
+            width=self.front_render_width,
+            height=self.front_render_height,
+            intrinsic=self.render_intrinsic,
+            near=0.01,
+            far=100,
+        )
+
         # Determine resolution and intrinsic based on camera_mode
         if self.camera_mode == "direct_pinhole":
             return [
@@ -298,6 +310,7 @@ class Track1Env(BaseEnv):
                     near=0.01,
                     far=100,
                 ),
+                side_camera,
             ]
         else:
             # High-res source for distortion pipeline using scaled intrinsic
@@ -311,6 +324,7 @@ class Track1Env(BaseEnv):
                     near=0.01,
                     far=100,
                 ),
+                side_camera,
             ]
 
     def _setup_sensors(self, options: dict):
