@@ -92,6 +92,7 @@ class RewardConfig:
     stack_height_tolerance: float = 0.005
     stack_xy_tolerance: float = 0.02
     stack_align_tanh_scale: float = 0.03
+    transport_height_margin: float = 0.05
     green_z_range: List[float] = field(default_factory=lambda: [0.010, 0.020])
     adaptive_grasp_weight: AdaptiveWeightConfig = field(default_factory=AdaptiveWeightConfig)
     gate_lift_with_grasp: bool = False

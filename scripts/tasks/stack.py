@@ -109,22 +109,85 @@ class StackTaskHandler(BaseTaskHandler):
             max_angle=self.env.grasp_max_angle,
         )
         grasp_reward = is_grasped.float()
+        
+        # 2.5 Anti-Bow Penalty (Wrist vs Fingertips)
+        # Penalize if wrist joint (gripper_link) is lower than fingertips (tcp_pos) when grasping
+        # This prevents the "bowed" wrist posture
+        
+        # We need the actual physical wrist link.
+        # In SO101 agent, the physical wrist is 'gripper_link' or 'wrist_link'.
+        # Let's use the actual joint positions to detect pitch.
+        
+        # Simpler approach: Check tcp_pose quaternion pitch
+        # Ideally, gripper should be pointing DOWN (-Z) or Level.
+        # If pointing UP, that's bad.
+        
+        # Let's penalize if wrist joint (link index 5) is lower than TCP
+        # agent.robot.get_links()[5] is gripper_link (wrist base)
+        # agent.tcp_pos is TCP
+        wrist_pos = agent.robot.get_links()[5].pose.p
+        tcp_pos = agent.tcp_pos
+        
+        # If wrist is lower than TCP, we have a problem (upside down or excessive pitch)
+        # wrist_z < tcp_z is BAD for top-down picking.
+        # Limit this penalty to when we are grasping or close to it
+        wrist_height_diff = wrist_pos[:, 2] - tcp_pos[:, 2] # Should be positive (Wrist above TCP)
+        
+        # Penalty grows if wrist is below TCP (diff < 0)
+        # Use ReLU to only punish negative values
+        # penalty = weight * relu(-diff)
+        anti_bow_penalty = torch.relu(-wrist_height_diff) 
+        
+        # Add to total reward (negative term) - weight 1.0 (strong enough to correct)
+        # Only apply when close to object
+        close_mask = (dist_to_red < 0.05).float()
+        grasp_reward = grasp_reward - (1.0 * anti_bow_penalty * close_mask)
+        
+        
 
-        # 3. Lift progress: encourage red cube above green
+        # 3. Lift/Transport: Encorage lifting to a safe transport height (stack_target + margin)
+        # This helps the robot clear the bottom cube before trying to stack
         z_diff = red_pos[:, 2] - green_pos[:, 2]
+        # Dynamically calculated safe height: Target Stack Height + Configured Margin
+        transport_margin = getattr(self.env, "transport_height_margin", 0.05)
         target_h = max(self.env.stack_height_target, 1e-4)
-        lift_progress = torch.clamp(z_diff, min=0.0, max=target_h) / target_h
+        transport_h = target_h + transport_margin
+        
+        # Reward lifting up to transport height
+        # Note: We do NOT penalize being higher than this in the lift term, 
+        # because the 'place' term will eventually pull it down.
+        # This purely encourages "Get it up off the table/base".
+        lift_progress = torch.clamp(z_diff, min=0.0, max=transport_h) / transport_h
+        
         if self.env.gate_lift_with_grasp:
             lift_progress = lift_progress * grasp_reward
 
-        # 4. Align horizontally with green cube (always provides guidance)
+        # 4. Align horizontally with green cube
+        # Gating Idea: "Grasp securely before aligning"
+        # We multiply align reward by is_grasped. 
+        # Since is_grasped is now based on min_force=0.1 (easy to trigger), this is not too strict.
+        # But it prevents the robot from trying to align the "ghost of the red cube" without holding it.
+        # To make it even smoother, we can allow a small amount of align reward always (for curiosity),
+        # but the bulk comes from holding it.
+        # Let's use: 0.1 (always) + 0.9 (if grasped)
         xy_dist = torch.norm(red_pos[:, :2] - green_pos[:, :2], dim=1)
-        align_reward = 1.0 - torch.tanh(xy_dist / self.env.stack_align_tanh_scale)
+        
+        # Base alignment term
+        raw_align_reward = 1.0 - torch.tanh(xy_dist / self.env.stack_align_tanh_scale)
+        
+        # Apply Gating
+        # is_grasped is derived from contact sensor (binary-ish float). 
+        # Using the raw is_grasped (before anti-bow penalty) to indicate "holding".
+        align_reward = raw_align_reward * (0.1 + 0.9 * is_grasped.float())
 
-        # 5. Place reward with smooth height guidance once XY is near target
+        # 5. Place reward: Only active when XY is aligned
+        # Strong incentive to lower to exact stack height ONLY when safe to do so
         z_dist_to_target = torch.abs(z_diff - target_h)
-        place_guidance = 1.0 - torch.tanh(z_dist_to_target / 0.02)
-        place_reward = place_guidance * (xy_dist < self.env.stack_xy_tolerance).float()
+        place_guidance = 1.0 - torch.tanh(z_dist_to_target / 0.01) # Sharper guidance (1cm scale)
+        
+        # Condition: Must be within 2x XY tolerance to start caring about precise Z placement
+        is_xy_aligned = (xy_dist < (self.env.stack_xy_tolerance * 2.0)).float()
+        place_reward = place_guidance * is_xy_aligned
 
         # 6. Success and fail bonuses/penalties
         success = info.get("success", torch.zeros(self.env.num_envs, device=self.device, dtype=torch.bool))

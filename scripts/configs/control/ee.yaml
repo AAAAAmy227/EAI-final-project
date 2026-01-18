@@ -5,7 +5,7 @@ control_mode: pd_ee_delta_pos
 normalize_action: true
 ee_link: gripper_frame_link
 pos_delta: 0.02      # meters per step
-delta_gripper: 0.02   # rad per step
+delta_gripper: 0.05   # rad per step (faster closing)
 
 action_bounds:
   shoulder_pan: 0.44    # ~25 degrees
